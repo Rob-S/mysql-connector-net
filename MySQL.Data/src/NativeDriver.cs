@@ -1,4 +1,4 @@
-// Copyright (c) 2004, 2020 Oracle and/or its affiliates.
+// Copyright (c) 2004, 2021, Oracle and/or its affiliates.
 //
 // This program is free software; you can redistribute it and/or modify
 // it under the terms of the GNU General Public License, version 2.0, as
@@ -56,13 +56,16 @@ namespace MySql.Data.MySqlClient
     private Driver owner;
     private int warnings;
     private MySqlAuthenticationPlugin authPlugin;
-
+    private MyNetworkStream networkStream;
     // Windows authentication method string, used by the protocol.
     // Also known as "client plugin name".
     const string AuthenticationWindowsPlugin = "authentication_windows_client";
 
     // Predefined username for IntegratedSecurity
     const string AuthenticationWindowsUser = "auth_windows";
+
+    // Regular expression that checks for GUID format 
+    private static Regex guidRegex = new Regex(@"(?i)^[0-9A-F]{8}[-](?:[0-9A-F]{4}[-]){3}[0-9A-F]{12}$"); 
 
     public NativeDriver(Driver owner)
     {
@@ -190,7 +193,7 @@ namespace MySql.Data.MySqlClient
       // connect to one of our specified hosts
       try
       {
-        baseStream = StreamCreator.GetStream(Settings);
+        baseStream = StreamCreator.GetStream(Settings,ref networkStream);
         if (Settings.IncludeSecurityAsserts)
           MySqlSecurityPermission.CreatePermissionSet(false).Assert();
       }
@@ -208,7 +211,7 @@ namespace MySql.Data.MySqlClient
             (int)MySqlErrorCode.UnableToConnectToHost);
 
       int maxSinglePacket = 255 * 255 * 255;
-      stream = new MySqlStream(baseStream, Encoding, false);
+      stream = new MySqlStream(baseStream, Encoding, false, networkStream.Socket);
 
       stream.ResetTimeout((int)Settings.ConnectionTimeout * 1000);
 
@@ -304,7 +307,7 @@ namespace MySql.Data.MySqlClient
       // if we are using compression, then we use our CompressedStream class
       // to hide the ugliness of managing the compression
       if ((connectionFlags & ClientFlags.COMPRESS) != 0)
-        stream = new MySqlStream(baseStream, Encoding, true);
+        stream = new MySqlStream(baseStream, Encoding, true, networkStream.Socket);
 
       // give our stream the server version we are connected to.  
       // We may have some fields that are read differently based 
@@ -481,6 +484,10 @@ namespace MySql.Data.MySqlClient
     {
       try
       {
+        if (stream.Socket==null && networkStream.Socket!=null)
+        {
+          stream.Socket = networkStream.Socket;
+        }
         packet = stream.ReadPacket();
       }
       catch (TimeoutException)
@@ -599,7 +606,6 @@ namespace MySql.Data.MySqlClient
     {
       long length = -1;
       bool isNull;
-      Regex regex = new Regex(@"(?i)^[0-9A-F]{8}[-](?:[0-9A-F]{4}[-]){3}[0-9A-F]{12}$"); // check for GUID format
 
       if (nullMap != null)
       {
@@ -613,8 +619,8 @@ namespace MySql.Data.MySqlClient
         isNull = length == -1;
       }
 
-      if ((valObject.MySqlDbType is MySqlDbType.Guid && !Settings.OldGuids) &&
-        !regex.IsMatch(Encoding.GetString(packet.Buffer, packet.Position, (int)length)))
+      if (!isNull && (valObject.MySqlDbType is MySqlDbType.Guid && !Settings.OldGuids) &&
+        !guidRegex.IsMatch(Encoding.GetString(packet.Buffer, packet.Position, (int)length)))
       {
         field.Type = MySqlDbType.String;
         valObject = field.GetValueObject();

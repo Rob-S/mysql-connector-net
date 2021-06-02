@@ -1,3 +1,23 @@
+8.0.25
+- This release contains no functional changes and is published to align the version number with the MySQL Server 8.0.25 release.
+
+
+8.0.24
+- Added support for the SASL authentication protocol using the GSSAPI/Kerberos method (WL14210).
+- Added a more descriptive message for when a connection is closed by server due to a timeout (WL14393).
+- Added Support for connection close notification (WL14208).
+- Fixed an error provoked by a duplicate schema name when using Entity Framework (MySQL Bug #101236, Oracle Bug #32358174).
+- Fixed a bug that affected driver performance by incrementing the execution time (MySQL Bug #101714, Oracle Bug #32386454).
+- Removed the "Ignore Prepare" connection string option (Oracle Bug #31872906).
+- Fixed bad handling of NULL values for GUID data type columns (MySQL Bug #101252, Oracle Bug #32049837).
+- Added missing data type mappings to Entity Framework Core projects.(MySQL Bug #102381, Oracle Bug #32424742).
+- Fixed a bug that interpreted the pound symbol in a JSON column incorrectly when using accent sensitive collation (MySQL Bug #102393, Oracle Bug #32429236).
+- Added .NET 4.8 to the non-supported frameworks for using deflate_stream compression algorithm (Oracle Bug #32488373).
+- Added GUID mapping to EntityFrameworkCore (MySQL Bug #93398, Oracle Bug #32173133).
+- Contribution: Added error codes to handle different types of exceptions. (MySQL Bug #101592, Oracle Bug #32150115). Thanks to Stanislav Revin for the contribution.
+- Removed the SSH tunneling feature (WL14562).
+
+
 8.0.23
 - Added support for .NET Framework 4.8 in MySQL.Web (Oracle Bug #31799902).
 - Replace language in source code and files (WL14211).
@@ -9,6 +29,7 @@
 - Fixed bad handling of Wait() for an async execution that could cause a program to hang indefinitely hence blocking it (MySQL Bug #100692, Oracle Bug #31945397).
 - Removing aliases(address,addr,network address) for server option in the connection string.(Oracle Bug #31248601)
 - Fixed a bug caused by setting an Int32 default value to any enum parameter (MySQL Bug #84701, Oracle Bug #25467610).
+- Fixed a bug that allowed the insertion of a parameter with "-1" as index (MySQL Bug #100522, Oracle Bug #31754599).
 - Added support for EF Core 5.0 (WL14214).
 - Fixed the COM_STMT_EXECUTE packet structure to only send new-params-bound flag when it has parameters (Oracle Bug #32208427).
 - Fixed types validation for stored procedure parameters (MySQL Bug #101302, Oracle Bug #32066024).
