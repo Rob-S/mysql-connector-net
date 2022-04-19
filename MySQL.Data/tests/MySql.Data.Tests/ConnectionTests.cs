@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2013, 2020, Oracle and/or its affiliates.
+﻿// Copyright (c) 2013, 2021, Oracle and/or its affiliates.
 //
 // This program is free software; you can redistribute it and/or modify
 // it under the terms of the GNU General Public License, version 2.0, as
@@ -26,18 +26,20 @@
 // along with this program; if not, write to the Free Software Foundation, Inc.,
 // 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 
-using System;
-using System.Data;
-using System.Security.Authentication;
-using System.Threading.Tasks;
+using MySql.Data.Common;
 using NUnit.Framework;
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace MySql.Data.MySqlClient.Tests
 {
   public class ConnectionTests : TestBase
   {
     const string _EXPIRED_USER = "expireduser";
-    const string _EXPIRED_HOST = "localhost";
 
     [Test]
     public void TestConnectionStrings()
@@ -74,7 +76,7 @@ namespace MySql.Data.MySqlClient.Tests
       Assert.True(ConnectionState.Closed == c.State, "State");
 
       // Bug #30791289 - MYSQLCONNECTION(NULL) NOW THROWS NULLREFERENCEEXCEPTION
-      var conn = new MySqlConnection("server=localhost;");
+      var conn = new MySqlConnection($"server={Host};");
       conn.ConnectionString = null;
       Assert.AreEqual(string.Empty, conn.ConnectionString);
     }
@@ -151,7 +153,7 @@ namespace MySql.Data.MySqlClient.Tests
     public void ConnectWithQuotePassword()
     {
       ExecuteSQL("GRANT ALL ON *.* to 'quotedUser'@'%' IDENTIFIED BY '\"'", true);
-      ExecuteSQL("GRANT ALL ON *.* to 'quotedUser'@'localhost' IDENTIFIED BY '\"'", true);
+      ExecuteSQL($"GRANT ALL ON *.* to 'quotedUser'@'{Host}' IDENTIFIED BY '\"'", true);
       MySqlConnectionStringBuilder settings = new MySqlConnectionStringBuilder(Connection.ConnectionString);
       settings.UserID = "quotedUser";
       settings.Password = "\"";
@@ -168,10 +170,10 @@ namespace MySql.Data.MySqlClient.Tests
     public void TestConnectingSocketBadHostName()
     {
       MySqlConnectionStringBuilder connStr = new MySqlConnectionStringBuilder(Connection.ConnectionString);
-      connStr.Server = "foobar";
+      connStr.Server = "badHostName";
       MySqlConnection c = new MySqlConnection(connStr.GetConnectionString(true));
-      var ex = Assert.Throws<MySqlException>(() => c.Open());
-      Assert.AreEqual((int)MySqlErrorCode.UnableToConnectToHost, ex.Number);
+      var ex = Assert.Throws<AggregateException>(() => c.Open());
+      if (Platform.IsWindows()) Assert.IsTrue(ex.InnerException.GetType() == typeof(System.Net.Sockets.SocketException));
     }
 
     /// <summary>
@@ -480,14 +482,15 @@ namespace MySql.Data.MySqlClient.Tests
     public void ConnectionTimeout()
     {
       MySqlConnectionStringBuilder connStr = new MySqlConnectionStringBuilder(Connection.ConnectionString);
+      connStr.Server = "10.20.30.40";
       connStr.Port = 3000;
       connStr.ConnectionTimeout = 5;
       MySqlConnection c = new MySqlConnection(connStr.GetConnectionString(true));
 
       DateTime start = DateTime.Now;
-      Assert.Throws<MySqlException>(() => c.Open());
+      Assert.Throws<TimeoutException>(() => c.Open());
       TimeSpan diff = DateTime.Now.Subtract(start);
-      Assert.True(diff.TotalSeconds < 10, $"Timeout exceeded: {diff.TotalSeconds}");
+      Assert.True(diff.TotalSeconds < 6, $"Timeout exceeded: {diff.TotalSeconds}");
     }
 
     [Test]
@@ -503,7 +506,7 @@ namespace MySql.Data.MySqlClient.Tests
       c.Close();
 
       ExecuteSQL("GRANT ALL ON *.* to 'nopass'@'%'", true);
-      ExecuteSQL("GRANT ALL ON *.* to 'nopass'@'localhost'", true);
+      ExecuteSQL($"GRANT ALL ON *.* to 'nopass'@'{Host}'", true);
       ExecuteSQL("FLUSH PRIVILEGES", true);
 
       // connect with no password
@@ -632,19 +635,20 @@ namespace MySql.Data.MySqlClient.Tests
     {
       if ((Version < new Version(5, 6, 6)) || (Version >= new Version(8, 0, 17))) return;
 
-      string expiredfull = string.Format("'{0}'@'{1}'", _EXPIRED_USER, _EXPIRED_HOST);
+      string expiredfull = string.Format("'{0}'@'{1}'", _EXPIRED_USER, Host);
 
       using (MySqlConnection conn = new MySqlConnection(Settings.ToString()))
       {
         MySqlCommand cmd = new MySqlCommand("", conn);
+        string expiredPwd = _EXPIRED_USER + "1";
 
         // creates expired user
-        SetupExpiredPasswordUser();
+        SetupExpiredPasswordUser(expiredPwd);
 
         // validates expired user
         var cnstrBuilder = new MySqlConnectionStringBuilder(Root.ConnectionString);
         cnstrBuilder.UserID = _EXPIRED_USER;
-        cnstrBuilder.Password = _EXPIRED_USER + "1";
+        cnstrBuilder.Password = expiredPwd;
         conn.ConnectionString = cnstrBuilder.ConnectionString;
         conn.Open();
 
@@ -683,152 +687,18 @@ namespace MySql.Data.MySqlClient.Tests
 
     #endregion
 
-    #region SSL
-
-    [Test]
-    [Property("Category", "Security")]
-    public void SslPreferredByDefault()
-    {
-      MySqlCommand command = new MySqlCommand("SHOW SESSION STATUS LIKE 'Ssl_version';", Connection);
-      using (MySqlDataReader reader = command.ExecuteReader())
-      {
-        Assert.True(reader.Read());
-        StringAssert.StartsWith("TLSv1", reader.GetString(1));
-      }
-    }
-
-    [Test]
-    [Property("Category", "Security")]
-    public void SslOverrided()
-    {
-      var cstrBuilder = new MySqlConnectionStringBuilder(Connection.ConnectionString);
-      cstrBuilder.SslMode = MySqlSslMode.None;
-      cstrBuilder.AllowPublicKeyRetrieval = true;
-      cstrBuilder.Database = "";
-      using (MySqlConnection connection = new MySqlConnection(cstrBuilder.ConnectionString))
-      {
-        connection.Open();
-        MySqlCommand command = new MySqlCommand("SHOW SESSION STATUS LIKE 'Ssl_version';", connection);
-        using (MySqlDataReader reader = command.ExecuteReader())
-        {
-          Assert.True(reader.Read());
-          Assert.AreEqual(string.Empty, reader.GetString(1));
-        }
-      }
-    }
-
-    /// <summary>
-    /// A client can connect to MySQL server using SSL and a pfx file.
-    /// <remarks>
-    /// This test requires starting the server with SSL support.
-    /// For instance, the following command line enables SSL in the server:
-    /// mysqld --no-defaults --standalone --console --ssl-ca='MySQLServerDir'\mysql-test\std_data\cacert.pem --ssl-cert='MySQLServerDir'\mysql-test\std_data\server-cert.pem --ssl-key='MySQLServerDir'\mysql-test\std_data\server-key.pem
-    /// </remarks>
-    /// </summary>
-    [Test]
-    [Property("Category", "Security")]
-    public void CanConnectUsingFileBasedCertificate()
-    {
-      string connstr = Connection.ConnectionString;
-      connstr += ";CertificateFile=client.pfx;CertificatePassword=pass;SSL Mode=Required;";
-      using (MySqlConnection c = new MySqlConnection(connstr))
-      {
-        c.Open();
-        Assert.AreEqual(ConnectionState.Open, c.State);
-        MySqlCommand command = new MySqlCommand("SHOW SESSION STATUS LIKE 'Ssl_version';", c);
-        using (MySqlDataReader reader = command.ExecuteReader())
-        {
-          Assert.True(reader.Read());
-          StringAssert.StartsWith("TLSv1", reader.GetString(1));
-        }
-      }
-    }
-
-    [TestCase("[]", null)]
-    [TestCase("Tlsv1", "TLSv1")]
-    [TestCase("Tlsv1.0, Tlsv1.1", "TLSv1.1")]
-    [TestCase("Tlsv1.0, Tlsv1.1, Tlsv1.2", "TLSv1.2")]
-    //#if NET48 || NETCOREAPP3_1 || NET5_0
-    //    [TestCase("Tlsv1.3", "Tlsv1.3")]
-    //    [TestCase("Tlsv1.0, Tlsv1.1, Tlsv1.2, Tlsv1.3", "Tlsv1.3")]
-    //#endif
-#if NET452
-    [TestCase("Tlsv1.3", "")]
-    [TestCase("Tlsv1.0, Tlsv1.1, Tlsv1.2, Tlsv1.3", "Tlsv1.2")]
-#endif
-    [Property("Category", "Security")]
-    public void TlsVersionTest(string tlsVersion, string result)
-    {
-      var builder = new MySqlConnectionStringBuilder(Connection.ConnectionString);
-
-      void SetTlsVersion() { builder.TlsVersion = tlsVersion; }
-      if (result == null)
-      {
-        Assert.That(SetTlsVersion, Throws.Exception);
-        return;
-      }
-      SetTlsVersion();
-      var conn = new MySqlConnection(builder.ConnectionString);
-
-      if (!String.IsNullOrWhiteSpace(result))
-      {
-        using (conn)
-        {
-          // TLSv1.0 and TLSv1.1 has been deprecated in Ubuntu 20.04 so an exception is thrown
-          try { conn.Open(); }
-          catch (Exception ex) { Assert.True(ex is AuthenticationException); return; }
-
-          Assert.AreEqual(ConnectionState.Open, conn.State);
-          MySqlCommand cmd = conn.CreateCommand();
-          cmd.CommandText = "SHOW SESSION STATUS LIKE 'ssl_version'";
-          using (MySqlDataReader dr = cmd.ExecuteReader())
-          {
-            Assert.True(dr.Read());
-            StringAssert.AreEqualIgnoringCase(result, dr[1].ToString());
-          }
-        }
-      }
-      else
-#if NET452
-        Assert.Throws<NotSupportedException>(() => conn.Open());
-#else
-        Assert.Throws<System.ComponentModel.Win32Exception>(() => conn.Open());
-#endif
-    }
-
-    #endregion
-
     [Test]
     public void IPv6Connection()
     {
       if (Version < new Version(5, 6, 0)) return;
 
       MySqlConnectionStringBuilder sb = new MySqlConnectionStringBuilder(Connection.ConnectionString);
-      sb.Server = "::1";
+      sb.Server = GetMySqlServerIp(true);
+
       using (MySqlConnection conn = new MySqlConnection(sb.ToString()))
       {
         conn.Open();
         Assert.AreEqual(ConnectionState.Open, conn.State);
-      }
-    }
-
-    private void SetupExpiredPasswordUser()
-    {
-      string expiredFull = $"'{_EXPIRED_USER}'@'{_EXPIRED_HOST}'";
-
-      using (MySqlConnection conn = GetConnection(true))
-      {
-        MySqlCommand cmd = conn.CreateCommand();
-
-        // creates expired user
-        cmd.CommandText = $"SELECT COUNT(*) FROM mysql.user WHERE user='{_EXPIRED_USER}' AND host='{_EXPIRED_HOST}'";
-        long count = (long)cmd.ExecuteScalar();
-        if (count > 0)
-          MySqlHelper.ExecuteNonQuery(conn, $"DROP USER {expiredFull}");
-
-        MySqlHelper.ExecuteNonQuery(conn, $"CREATE USER {expiredFull} IDENTIFIED BY '{_EXPIRED_USER}1'");
-        MySqlHelper.ExecuteNonQuery(conn, $"GRANT SELECT ON `{Settings.Database}`.* TO {expiredFull}");
-        MySqlHelper.ExecuteNonQuery(conn, $"ALTER USER {expiredFull} PASSWORD EXPIRE");
       }
     }
 
@@ -844,7 +714,7 @@ namespace MySql.Data.MySqlClient.Tests
       MySqlConnectionStringBuilder sb = new MySqlConnectionStringBuilder(Settings.ConnectionString);
       sb.UserID = _EXPIRED_USER;
       sb.Password = _EXPIRED_USER + "1";
-      SetupExpiredPasswordUser();
+      SetupExpiredPasswordUser(sb.Password);
       using (MySqlConnection conn = new MySqlConnection(sb.ConnectionString))
       {
         conn.Open();
@@ -867,7 +737,7 @@ namespace MySql.Data.MySqlClient.Tests
       string host = Settings.Server;
       uint port = Settings.Port;
 
-      SetupExpiredPasswordUser();
+      SetupExpiredPasswordUser(expiredPwd);
 
       var sb = new MySqlConnectionStringBuilder();
       sb.Server = host;
@@ -900,6 +770,62 @@ namespace MySql.Data.MySqlClient.Tests
       }
     }
 
+    /// <summary>
+    /// Bug#32853205 - UNABLE TO CONNECT USING NAMED PIPES AND SHARED MEMORY
+    /// To be able to connect using Named Pipes, it requires to start the server supporting the protocol
+    /// mysqld --standalone --console --enable-named-pipe
+    /// </summary>    
+    [Test]
+    [Ignore("To be able to connect using Named Pipes, it requires to start the server supporting the protocol")]
+    public void ConnectUsingNamedPipes()
+    {
+      var sb = new MySqlConnectionStringBuilder()
+      {
+        Server = Host,
+        Pooling = false,
+        UserID = RootUser,
+        ConnectionProtocol = MySqlConnectionProtocol.NamedPipe,
+        SslMode = MySqlSslMode.Required
+      };
+
+      // Named Pipes connection protocol is not allowed to use SSL connections.
+      using var conn = new MySqlConnection(sb.ConnectionString);
+      var ex = Assert.Throws<MySqlException>(() => conn.Open());
+      StringAssert.AreEqualIgnoringCase(string.Format(Resources.SslNotAllowedForConnectionProtocol, sb.ConnectionProtocol), ex.Message);
+    }
+
+    /// <summary>
+    /// Bug#32853205 - UNABLE TO CONNECT USING NAMED PIPES AND SHARED MEMORY
+    /// </summary>
+    [Test]
+    [Property("Category", "Security")]
+    public void ConnectUsingSharedMemory()
+    {
+      if (!Platform.IsWindows()) Assert.Ignore("Shared Memory is only supported on Windows.");
+
+      var sb = new MySqlConnectionStringBuilder()
+      {
+        Server = Host,
+        Pooling = false,
+        UserID = RootUser,
+        ConnectionProtocol = MySqlConnectionProtocol.SharedMemory,
+        SharedMemoryName = "MySQLSocket"
+      };
+
+      using (var conn = new MySqlConnection(sb.ConnectionString))
+      {
+        conn.Open();
+        Assert.AreEqual(ConnectionState.Open, conn.State);
+      }
+
+      // Shared Memory connection protocol is not allowed to use SSL connections.
+      sb.SslMode = MySqlSslMode.Required;
+      using (var conn = new MySqlConnection(sb.ConnectionString))
+      {
+        var ex = Assert.Throws<MySqlException>(() => conn.Open());
+        StringAssert.AreEqualIgnoringCase(string.Format(Resources.SslNotAllowedForConnectionProtocol, sb.ConnectionProtocol), ex.Message);
+      }
+    }
 
 #if NET452
     /// <summary>
@@ -1067,5 +993,553 @@ namespace MySql.Data.MySqlClient.Tests
           closed = true;
       }
     }
+
+    /// <summary>
+    /// Bug #33380176	Malformed communication packet while using MEDIUMTEXT
+    /// </summary>
+    [Test]
+    public void MediumTextMalformedPkg()
+    {
+      ExecuteSQL("SET GLOBAL max_allowed_packet=25165824");
+      ExecuteSQL($"CREATE TABLE `{Settings.Database}`.`testmalformed` (caseref VARCHAR(12) NOT NULL, fieldId INT NOT NULL, " +
+        "fieldtext MEDIUMTEXT, PRIMARY KEY (caseref, fieldId))");
+
+      int rowMax = 40000; //Maximum allowed for prepared statement 21846
+      var query = $"INSERT INTO `{Settings.Database}`.`testmalformed` (caseref, fieldId, fieldtext) VALUES {{0}} ON DUPLICATE KEY UPDATE caseref = caseref;";
+
+      List<MySqlParameter> mySqlParameters = new();
+      StringBuilder sb = new();
+      string[] fieldValues = {
+            "0010EF7V002",
+            "1",
+            "Text, text, and more text."
+        };
+
+      for (int i = 0; i < rowMax; i++)
+      {
+        mySqlParameters.Add(new MySqlParameter(i + "caseref", fieldValues[0]));
+        mySqlParameters.Add(new MySqlParameter(i + "fieldid_1", int.Parse(fieldValues[1]) + i));
+        mySqlParameters.Add(new MySqlParameter(i + "fieldtext_1", fieldValues[2]));
+        sb.AppendFormat("(@{0}caseref, @{0}fieldid_1, @{0}fieldtext_1), ", i);
+      }
+
+      string fullQuery = string.Format(query, sb.ToString(0, sb.Length - 2));
+      var res = MySqlHelper.ExecuteNonQuery(Connection.ConnectionString + ";ssl-mode=none", fullQuery, mySqlParameters.ToArray());
+      Assert.AreEqual(res, 40000);
+
+      ExecuteSQL("SET GLOBAL max_allowed_packet=1024000");
+      ExecuteSQL($"DROP TABLE `{Settings.Database}`.`testmalformed`;");
+    }
+
+    #region WL14389
+
+    [Test, Description("Verify Compression in classic protocol where default connection string is used without any option")]
+    public void CompressionUnit()
+    {
+      if (Version < new Version(8, 0, 0)) Assert.Ignore("This test is for MySql 8.0 or higher.");
+      using (var dbConn = new MySqlConnection(Connection.ConnectionString + ";UseCompression=True"))
+      {
+        var cmd = new MySqlCommand();
+        dbConn.Open();
+        cmd.Connection = dbConn;
+        cmd.CommandText = "select * from performance_schema.session_status where variable_name like '%COMPRESSION%' order by 1";
+        using (MySqlDataReader reader = cmd.ExecuteReader())
+        {
+          string[] compressionValues = new string[] { "Compression", "Compression_algorithm", "Compression_level" };
+          int i = 0;
+          if (reader.HasRows)
+          {
+            while (reader.Read())
+            {
+              if (i == 0)
+              {
+                Assert.AreEqual("ON", reader.GetString(1));
+              }
+              Assert.IsNotNull(reader.GetString(1));
+              i++;
+            }
+          }
+        }
+
+        cmd.CommandText = "select @@protocol_compression_algorithms";
+        using (MySqlDataReader reader = cmd.ExecuteReader())
+        {
+          string[] compressionValues = new string[] { "@@protocol_compression_algorithms" };
+          int i = 0;
+          if (reader.HasRows)
+          {
+            while (reader.Read())
+            {
+              Assert.IsNotNull(reader.GetString(0));
+              i++;
+            }
+          }
+        }
+        dbConn.Close();
+      }
+
+      using (var dbConn = new MySqlConnection(Connection.ConnectionString + ";UseCompression=False"))
+      {
+        dbConn.Open();
+        var cmd = new MySqlCommand();
+        cmd.Connection = dbConn;
+        cmd.CommandText = "select * from performance_schema.session_status where variable_name like '%COMPRESSION%' order by 1";
+        using (MySqlDataReader reader = cmd.ExecuteReader())
+        {
+          string[] compressionValues = new string[] { "Compression", "Compression_algorithm", "Compression_level" };
+          int i = 0;
+          if (reader.HasRows)
+          {
+            while (reader.Read())
+            {
+              if (i == 0)
+              {
+                Assert.AreEqual("OFF", reader.GetString(1));
+              }
+              Assert.IsNotNull(reader.GetString(1));
+              i++;
+            }
+          }
+        }
+
+        cmd.Connection = dbConn;
+        cmd.CommandText = "select @@protocol_compression_algorithms";
+        using (MySqlDataReader reader = cmd.ExecuteReader())
+        {
+          string[] compressionValues = new string[] { "@@protocol_compression_algorithms" };
+          int i = 0;
+          if (reader.HasRows)
+          {
+            while (reader.Read())
+            {
+              Assert.IsNotNull(reader.GetString(0));
+              i++;
+            }
+          }
+        }
+        dbConn.Close();
+      }
+    }
+
+    [Test, Description("Verify Compression in classic protocol where default connection string is used without any option")]
+    public void CompressionValidationInClassicProtocol()
+    {
+      if (Version < new Version(8, 0, 0)) Assert.Ignore("This test is for MySql 8.0 or higher.");
+      string[] compressionAlgorithms = new string[] { "zlib", "zstd", "uncompressed", "uncompressed,zlib", "uncompressed,zstd", "zstd,zlib", "zstd,zlib,uncompressed" };
+      for (int k = 0; k < compressionAlgorithms.Length; k++)
+      {
+        ExecuteSQL($"SET GLOBAL protocol_compression_algorithms = \"{compressionAlgorithms[k]}\"");
+        using (var dbConn = new MySqlConnection(Connection.ConnectionString + ";UseCompression=True"))
+        {
+          if (k == 1)
+          {
+            Assert.Throws<MySqlException>(() => dbConn.Open());
+            continue;
+          }
+
+          dbConn.Open();
+          Assert.AreEqual(ConnectionState.Open, dbConn.State);
+          MySqlCommand cmd = new MySqlCommand();
+          cmd.Connection = dbConn;
+          cmd.CommandText = "select * from performance_schema.session_status where variable_name like 'COMPRESSION%' order by 1";
+          using (MySqlDataReader reader = cmd.ExecuteReader())
+          {
+            int i = 0;
+            if (reader.HasRows)
+            {
+              while (reader.Read())
+              {
+                if (i == 0)
+                {
+                  if (k == 2 || k == 4)
+                  {
+                    // Compression should have been set to OFF as UseCompression is set to True in connection string but server is 
+                    // started with uncompressed and uncompressed/zstd
+                    Assert.AreEqual("OFF", reader.GetString(1));
+                  }
+                  else
+                  {
+                    Assert.AreEqual("ON", reader.GetString(1));
+                  }
+                }
+                Assert.IsNotNull(reader.GetString(1));
+                i++;
+              }
+            }
+          }
+
+          cmd.CommandText = "select @@protocol_compression_algorithms";
+          using (MySqlDataReader reader = cmd.ExecuteReader())
+          {
+            string[] compressionValues = new string[] { "@@protocol_compression_algorithms" };
+            int i = 0;
+            if (reader.HasRows)
+            {
+              while (reader.Read())
+              {
+                Assert.AreEqual(compressionAlgorithms[k], reader.GetString(0));
+                i++;
+              }
+            }
+          }
+
+          dbConn.Close();
+          using (MySqlConnection c = new MySqlConnection(dbConn.ConnectionString + ";max pool size = 1"))
+          {
+            c.Open();
+            ParameterizedThreadStart pts = new ParameterizedThreadStart(PoolingWorker);
+            Thread t = new Thread(pts);
+            t.Start(c);
+          }
+
+          using (MySqlConnection c2 = new MySqlConnection(dbConn.ConnectionString + ";max pool size = 1"))
+          {
+            c2.Open();
+            KillConnection(c2, true);
+          }
+        }
+
+        using (var dbConn = new MySqlConnection(Connection.ConnectionString + ";UseCompression=false"))
+        {
+          if (k == 0 || k == 1 || k == 5)
+          {
+            Assert.Throws<MySqlException>(() => dbConn.Open());
+            continue;
+          }
+
+          dbConn.Open();
+          Assert.AreEqual(ConnectionState.Open, dbConn.State);
+          MySqlCommand cmd = new MySqlCommand();
+          cmd.Connection = dbConn;
+          cmd.CommandText = "select * from performance_schema.session_status where variable_name like 'COMPRESSION%' order by 1";
+          using (MySqlDataReader reader = cmd.ExecuteReader())
+          {
+            int i = 0;
+            if (reader.HasRows)
+            {
+              while (reader.Read())
+              {
+                if (i == 0)
+                {
+                  Assert.AreEqual("OFF", reader.GetString(1));
+                }
+                Assert.IsNotNull(reader.GetString(1));
+                i++;
+              }
+            }
+          }
+
+          cmd.CommandText = "select @@protocol_compression_algorithms";
+          using (MySqlDataReader reader = cmd.ExecuteReader())
+          {
+            string[] compressionValues = new string[] { "@@protocol_compression_algorithms" };
+            int i = 0;
+            if (reader.HasRows)
+            {
+              while (reader.Read())
+              {
+                Assert.AreEqual(compressionAlgorithms[k], reader.GetString(0));
+                i++;
+              }
+            }
+          }
+
+          dbConn.Close();
+          using (MySqlConnection c = new MySqlConnection(dbConn.ConnectionString + ";max pool size = 1"))
+          {
+            c.Open();
+            ParameterizedThreadStart pts = new ParameterizedThreadStart(PoolingWorker);
+            Thread t = new Thread(pts);
+            t.Start(c);
+          }
+
+          using (MySqlConnection c2 = new MySqlConnection(dbConn.ConnectionString + ";max pool size = 1"))
+          {
+            c2.Open();
+            KillConnection(c2);
+          }
+        }
+      }
+      ExecuteSQL($"SET GLOBAL protocol_compression_algorithms = \"zlib,zstd,uncompressed\"");
+    }
+
+    [Test, Description("Test MySql Password Expiration with blank password")]
+    public void ExpiredBlankPassword()
+    {
+      if (Version < new Version(8, 0, 0)) Assert.Ignore("This test is for MySql 8.0 or higher.");
+
+      string host = Host == "localhost" ? Host : "%";
+      MySqlConnectionStringBuilder sb = new MySqlConnectionStringBuilder(Connection.ConnectionString);
+      sb.UserID = _EXPIRED_USER;
+      string[] pwds = new string[] { _EXPIRED_USER + "1", "" };
+
+      for (int i = 0; i < pwds.Length; i++)
+      {
+        //wrong password
+        sb.Password = "wrongpassword";
+        using (MySqlConnection conn = new MySqlConnection(sb.ConnectionString))
+        {
+          Assert.Throws<MySqlException>(() => conn.Open());
+        }
+
+        sb.Password = pwds[i];
+        SetupExpirePasswordExecuteQueriesFail("SELECT VERSION()", pwds[i]);
+        SetupExpirePasswordExecuteQueriesFail("SHOW VARIABLES LIKE '%audit%'", pwds[i]);
+        SetupExpirePasswordExecuteQueriesFail($"USE `{sb.Database}`", pwds[i]);
+        ExecuteQueriesFail("SELECT VERSION()", _EXPIRED_USER, pwds[i]);
+        ExecuteQueriesFail("SHOW VARIABLES LIKE '%audit%'", _EXPIRED_USER, pwds[i]);
+        ExecuteQueriesFail("select 1", _EXPIRED_USER, pwds[i]);
+
+        //reactivate user
+        ExecuteSQL($"ALTER USER '{_EXPIRED_USER}'@'{host}' Identified BY '{sb.Password}'");
+        ExecuteQueriesSuccess("SELECT VERSION()", sb.Password);
+        ExecuteQueriesSuccess("SHOW VARIABLES LIKE '%audit%'", sb.Password);
+        ExecuteQueriesSuccess("select 1", sb.Password);
+      }
+    }
+
+    [Test, Description("Test MySql Password Expiration with query variables")]
+    public void ExpiredPasswordBug2()
+    {
+      if (Version < new Version(8, 0, 0)) Assert.Ignore("This test is for MySql 8.0 or higher.");
+      var _expiredPwd = "expiredPwd";
+      SetupExpiredPasswordUser(_expiredPwd);
+
+      var sb = new MySqlConnectionStringBuilder(Root.ConnectionString);
+      sb.UserID = _EXPIRED_USER;
+      sb.Password = _expiredPwd;
+      sb.AllowUserVariables = true;
+      using (MySqlConnection conn = new MySqlConnection(sb.ConnectionString))
+      {
+        conn.Open();
+        MySqlCommand cmd = new MySqlCommand("SHOW VARIABLES LIKE '%audit%'", conn);
+        Assert.Throws<MySqlException>(() => cmd.ExecuteNonQuery());
+
+        cmd = new MySqlCommand("SELECT VERSION();", conn);
+        Assert.Throws<MySqlException>(() => cmd.ExecuteNonQuery());
+
+        cmd = new MySqlCommand("select @data := 3, @data * 4;", conn);
+        Assert.Throws<MySqlException>(() => cmd.ExecuteNonQuery());
+      }
+    }
+
+    [Test, Description("Test MySql Password Expiration with IsPasswordExpired validation")]
+    public void ExpiredPasswordBug3()
+    {
+      if (Version < new Version(8, 0, 0)) Assert.Ignore("This test is for MySql 8.0 or higher.");
+      string host = Host == "localhost" ? Host : "%";
+
+      var _expiredPwd = "expiredPwd";
+      var _newPwd = "newPwd";
+      var expiredFull = $"'{_EXPIRED_USER}'@'{host}'";
+      var testStr = "show create user " + expiredFull;
+
+      SetupExpiredPasswordUser(_expiredPwd);
+
+      var sb = new MySqlConnectionStringBuilder(Settings.ConnectionString);
+      sb.UserID = _EXPIRED_USER;
+      sb.Password = _expiredPwd;
+      using (MySqlConnection conn = new MySqlConnection(sb.ConnectionString))
+      {
+        conn.Open();
+        Assert.True(conn.IsPasswordExpired);
+      }
+
+      ExecuteSQL($"ALTER USER '{_EXPIRED_USER}'@'{host}' Identified BY '{_newPwd}'");
+
+      sb = new MySqlConnectionStringBuilder(Settings.ConnectionString);
+      sb.UserID = _EXPIRED_USER;
+      sb.Password = _newPwd;
+      using (MySqlConnection conn = new MySqlConnection(sb.ConnectionString))
+      {
+        conn.Open();
+        MySqlCommand cmd = new MySqlCommand("select version();", conn);
+        cmd.ExecuteNonQuery();
+
+        cmd = new MySqlCommand(testStr, conn);
+        using (var rdr = cmd.ExecuteReader())
+        {
+          while (rdr.Read())
+            Assert.IsNotNull(rdr[0].ToString());
+        }
+        Assert.False(conn.IsPasswordExpired);
+      }
+    }
+
+    [Test, Description("Test MySql Password Expiration and set password")]
+    public void ExpiredPasswordBug4()
+    {
+      if (Version < new Version(8, 0, 0)) Assert.Ignore("This test is for MySql 8.0 or higher.");
+      string host = Host == "localhost" ? Host : "%";
+
+      var _expiredPwd = "expiredPwd";
+      var _newPwd = "newPwd";
+      var expiredFull = $"'{_EXPIRED_USER}'@'{host}'";
+      var testStr = "show create user " + expiredFull;
+      SetupExpiredPasswordUser(_expiredPwd);
+
+      var sb = new MySqlConnectionStringBuilder(Settings.ConnectionString);
+      sb.UserID = _EXPIRED_USER;
+      sb.Password = _expiredPwd;
+      using (MySqlConnection conn = new MySqlConnection(sb.ConnectionString))
+      {
+        conn.Open();
+        Assert.True(conn.IsPasswordExpired);
+      }
+
+      ExecuteSQL($"set password for {expiredFull}='{_newPwd}'", true);
+
+      for (int i = 0; i < 50; i++)
+      {
+        sb = new MySqlConnectionStringBuilder(Settings.ConnectionString);
+        sb.UserID = _EXPIRED_USER;
+        sb.Password = _newPwd;
+        using (MySqlConnection conn = new MySqlConnection(sb.ConnectionString))
+        {
+          conn.Open();
+          MySqlCommand cmd = new MySqlCommand("select version();", conn);
+          cmd.ExecuteNonQuery();
+          cmd = new MySqlCommand(testStr, conn);
+          using (var rdr = cmd.ExecuteReader())
+          {
+            while (rdr.Read())
+              Assert.IsNotNull(rdr[0].ToString());
+          }
+          Assert.False(conn.IsPasswordExpired);
+        }
+
+        sb.UserID = _EXPIRED_USER;
+        sb.Password = _expiredPwd;
+        using (MySqlConnection conn = new MySqlConnection(sb.ConnectionString))
+        {
+          Assert.Throws<MySqlException>(() => conn.Open());
+        }
+      }
+    }
+
+    [Test, Description("Test connection paramter connection in classic")]
+    public void InvalidConnectTimeoutParameter()
+    {
+      var connStr = $"server={Settings.Server};user={Settings.UserID};port={Settings.Port};password={Settings.Password};connect-timeout=10000";
+      Assert.Throws<ArgumentException>(() => new MySqlConnection(connStr));
+
+      connStr = $"server={Settings.Server};user={Settings.UserID};port={Settings.Port};password={Settings.Password};connectiontimeout=10000";
+      using (var conn = new MySqlConnection(connStr))
+      {
+        Assert.IsInstanceOf<MySqlConnection>(conn);
+      }
+    }
+
+    [Test, Description("MySQL Dispose verification without calling close")]
+    public void ConnectionDispose()
+    {
+      MySqlConnection conn = new MySqlConnection(Settings.ConnectionString);
+      conn.Open();
+      Assert.AreEqual(ConnectionState.Open, conn.connectionState);
+      conn.Dispose();
+      Assert.AreEqual(ConnectionState.Closed, conn.connectionState);
+    }
+
+    [Test]
+    public void ConnectionPasswordException()
+    {
+      int code = 0;
+      var myConnectionString = $"server={Host};user={Settings.UserID};port={Port};password={Settings.Password}";
+      using (var conn = new MySqlConnection(myConnectionString))
+      {
+        conn.Open();
+        Assert.AreEqual(ConnectionState.Open, conn.State);
+      }
+
+      myConnectionString = $"server={Host};user={Settings.UserID};port={Port};password=wrong";
+      using (var conn = new MySqlConnection(myConnectionString))
+      {
+        var ex = Assert.Throws<MySqlException>(() => conn.Open());
+        code = ((MySqlException)ex.GetBaseException()).Number;
+        Assert.AreEqual(1045, code);
+      }
+    }
+
+    #endregion
+
+    #region Methods
+
+    private void ExecuteQueriesSuccess(string sql, string password)
+    {
+      if (Version < new Version(8, 0, 17)) return;
+      var sb = new MySqlConnectionStringBuilder(Connection.ConnectionString);
+      sb.UserID = _EXPIRED_USER;
+      sb.Password = password;
+      using (MySqlConnection conn = new MySqlConnection(sb.ConnectionString))
+      {
+        conn.Open();
+        Assert.AreEqual(ConnectionState.Open, conn.State);
+        MySqlCommand cmd = new MySqlCommand(sql, conn);
+        cmd.ExecuteNonQuery();
+      }
+    }
+
+    private void ExecuteQueriesFail(string sql, string user, string password)
+    {
+      if (Version < new Version(8, 0, 17)) return;
+      var sb = new MySqlConnectionStringBuilder(Connection.ConnectionString);
+      sb.UserID = user;
+      sb.Password = password;
+      using (MySqlConnection conn = new MySqlConnection(sb.ConnectionString))
+      {
+        conn.Open();
+        Assert.AreEqual(ConnectionState.Open, conn.State);
+        MySqlCommand cmd = new MySqlCommand(sql, conn);
+        Assert.Throws<MySqlException>(() => cmd.ExecuteNonQuery());
+      }
+    }
+
+    private void SetupExpirePasswordExecuteQueriesFail(string sql, string password)
+    {
+      if (Version < new Version(8, 0, 17)) return;
+      var sb = new MySqlConnectionStringBuilder(Connection.ConnectionString);
+      sb.UserID = _EXPIRED_USER;
+      sb.Password = password;
+      SetupExpiredPasswordUser(password);
+      using (MySqlConnection conn = new MySqlConnection(sb.ConnectionString))
+      {
+        conn.Open();
+        Assert.AreEqual(ConnectionState.Open, conn.State);
+        MySqlCommand cmd = new MySqlCommand(sql, conn);
+        Assert.Throws<MySqlException>(() => cmd.ExecuteNonQuery());
+      }
+    }
+
+    private void SetupExpiredPasswordUser(string password)
+    {
+      string host = Host == "localhost" ? Host : "%";
+      string expiredFull = $"'{_EXPIRED_USER}'@'{host}'";
+
+      using (MySqlConnection conn = new MySqlConnection(Root.ConnectionString))
+      {
+        conn.Open();
+        MySqlCommand cmd = conn.CreateCommand();
+
+        // creates expired user
+        cmd.CommandText = $"SELECT COUNT(*) FROM mysql.user WHERE user='{_EXPIRED_USER}'";
+        long count = (long)cmd.ExecuteScalar();
+
+        if (count > 0)
+          MySqlHelper.ExecuteNonQuery(conn, $"DROP USER {expiredFull}");
+
+        MySqlHelper.ExecuteNonQuery(conn, $"CREATE USER {expiredFull} IDENTIFIED BY '{password}'");
+        MySqlHelper.ExecuteNonQuery(conn, $"GRANT ALL ON `{Settings.Database}`.* TO {expiredFull}");
+        MySqlHelper.ExecuteNonQuery(conn, $"ALTER USER {expiredFull} PASSWORD EXPIRE");
+      }
+    }
+    private void PoolingWorker(object cn)
+    {
+      MySqlConnection conn = (cn as MySqlConnection);
+
+      Thread.Sleep(5000);
+      conn.Close();
+    }
+
+    #endregion
   }
 }

@@ -1,4 +1,4 @@
-// Copyright (c) 2004, 2016, Oracle and/or its affiliates. All rights reserved.
+// Copyright (c) 2004, 2021, Oracle and/or its affiliates.
 //
 // This program is free software; you can redistribute it and/or modify
 // it under the terms of the GNU General Public License, version 2.0, as
@@ -28,15 +28,17 @@
 
 using MySql.Data.Common;
 using System;
+using System.Collections;
 using System.Collections.Generic;
 
 namespace MySql.Data.MySqlClient
 {
   internal abstract class Statement
   {
-    protected  MySqlCommand command;
+    protected MySqlCommand command;
     private readonly List<MySqlPacket> _buffers;
     protected string commandText;
+    protected int paramsPosition;
 
     private Statement(MySqlCommand cmd)
     {
@@ -63,6 +65,8 @@ namespace MySql.Data.MySqlClient
 
     protected MySqlParameterCollection Parameters => command.Parameters;
 
+    protected MySqlAttributeCollection Attributes => command.Attributes;
+
     #endregion
 
     public virtual void Close(MySqlDataReader reader)
@@ -86,8 +90,7 @@ namespace MySql.Data.MySqlClient
         return false;
 
       MySqlPacket packet = _buffers[0];
-      //MemoryStream ms = stream.InternalBuffer;
-      Driver.SendQuery(packet);
+      Driver.SendQuery(packet, paramsPosition);
       _buffers.RemoveAt(0);
       return true;
     }
@@ -95,11 +98,13 @@ namespace MySql.Data.MySqlClient
     protected virtual void BindParameters()
     {
       MySqlParameterCollection parameters = command.Parameters;
+      MySqlAttributeCollection attributes = command.Attributes;
       int index = 0;
 
       while (true)
       {
-        InternalBindParameters(ResolvedCommandText, parameters, null);
+        MySqlPacket packet = BuildQueryAttributesPacket(attributes);
+        InternalBindParameters(ResolvedCommandText, parameters, packet);
 
         // if we are not batching, then we are done.  This is only really relevant the
         // first time through
@@ -107,16 +112,13 @@ namespace MySql.Data.MySqlClient
         while (index < command.Batch.Count)
         {
           MySqlCommand batchedCmd = command.Batch[index++];
-          MySqlPacket packet = (MySqlPacket)_buffers[_buffers.Count - 1];
+          packet = (MySqlPacket)_buffers[_buffers.Count - 1];
 
           // now we make a guess if this statement will fit in our current stream
           long estimatedCmdSize = batchedCmd.EstimatedSize();
           if (((packet.Length - 4) + estimatedCmdSize) > Connection.driver.MaxPacketSize)
-          {
-            // it won't, so we setup to start a new run from here
-            parameters = batchedCmd.Parameters;
-            break;
-          }
+            // it won't, so we raise an exception to avoid a partial batch 
+            throw new MySqlException(Resources.QueryTooLarge, (int)MySqlErrorCode.PacketTooLarge);
 
           // looks like we might have room for it so we remember the current end of the stream
           _buffers.RemoveAt(_buffers.Count - 1);
@@ -142,15 +144,64 @@ namespace MySql.Data.MySqlClient
       }
     }
 
+    /// <summary>
+    /// Builds the initial part of the COM_QUERY packet
+    /// </summary>
+    /// <param name="attributes">Collection of attributes</param>
+    /// <returns>A <see cref="MySqlPacket"/></returns>
+    private MySqlPacket BuildQueryAttributesPacket(MySqlAttributeCollection attributes)
+    {
+      MySqlPacket packet;
+      packet = new MySqlPacket(Driver.Encoding) { Version = Driver.Version };
+      packet.WriteByte(0);
+
+      if (attributes.Count > 0 && !Driver.SupportsQueryAttributes)
+        MySqlTrace.LogWarning(Connection.ServerThread, string.Format(Resources.QueryAttributesNotSupported, Driver.Version));
+      else if (Driver.SupportsQueryAttributes)
+      {
+        int paramCount = attributes.Count;
+        packet.WriteLength(paramCount); // int<lenenc> parameter_count - Number of parameters
+        packet.WriteByte(1); // int<lenenc> parameter_set_count - Number of parameter sets. Currently always 1
+
+        if (paramCount > 0)
+        {
+          // now prepare our null map
+          BitArray _nullMap = new BitArray(paramCount);
+          int numNullBytes = (_nullMap.Length + 7) / 8;
+          int _nullMapPosition = packet.Position;
+          packet.Position += numNullBytes;  // leave room for our null map
+          packet.WriteByte((byte)1); // new_params_bind_flag - Always 1. Malformed packet error if not 1
+
+          // set type and name for each attribute
+          foreach (MySqlAttribute attribute in attributes)
+          {
+            packet.WriteInteger(attribute.GetPSType(), 2);
+            packet.WriteLenString(attribute.AttributeName);
+          }
+
+          // set value for each attribute
+          for (int i = 0; i < attributes.Count; i++)
+          {
+            MySqlAttribute attr = attributes[i];
+            _nullMap[i] = (attr.Value == DBNull.Value || attr.Value == null);
+            if (_nullMap[i]) continue;
+            attr.Serialize(packet, true, Connection.Settings);
+          }
+
+          byte[] tempByteArray = new byte[(_nullMap.Length + 7) >> 3];
+          _nullMap.CopyTo(tempByteArray, 0);
+
+          Array.Copy(tempByteArray, 0, packet.Buffer, _nullMapPosition, tempByteArray.Length);
+        }
+      }
+
+      paramsPosition = packet.Position;
+      return packet;
+    }
+
     private void InternalBindParameters(string sql, MySqlParameterCollection parameters, MySqlPacket packet)
     {
       bool sqlServerMode = command.Connection.Settings.SqlServerMode;
-
-      if (packet == null)
-      {
-        packet = new MySqlPacket(Driver.Encoding) {Version = Driver.Version};
-        packet.WriteByte(0);
-      }
 
       MySqlTokenizer tokenizer = new MySqlTokenizer(sql)
       {

@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2020, Oracle and/or its affiliates.
+﻿// Copyright (c) 2020, 2021, Oracle and/or its affiliates.
 //
 // This program is free software; you can redistribute it and/or modify
 // it under the terms of the GNU General Public License, version 2.0, as
@@ -27,6 +27,7 @@
 // along with this program; if not, write to the Free Software Foundation, Inc.,
 // 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 
+using MySql.Data.Common;
 using System;
 using System.Security.Cryptography;
 using System.Text;
@@ -50,13 +51,15 @@ namespace MySql.Data.MySqlClient.Authentication
       switch (_mechanismName)
       {
         case "SCRAM-SHA-1":
-          scramMechanism = new ScramSha1Mechanism(GetUsername(), Settings.Password, Settings.Server);
+          scramMechanism = new ScramSha1Mechanism(GetUsername(), GetMFAPassword(), Settings.Server);
           break;
         case "SCRAM-SHA-256":
-          scramMechanism = new ScramSha256Mechanism(GetUsername(), Settings.Password, Settings.Server);
+          scramMechanism = new ScramSha256Mechanism(GetUsername(), GetMFAPassword(), Settings.Server);
           break;
         case "GSSAPI":
-          gssapiMechanism = new GssapiMechanism(GetUsername(), Settings.Password);
+          if (Platform.IsWindows())
+            throw new PlatformNotSupportedException(string.Format(Resources.AuthenticationPluginNotSupported, "GSSAPI/Kerberos"));
+          gssapiMechanism = new GssapiMechanism(GetUsername(), GetMFAPassword());
           break;
       }
     }

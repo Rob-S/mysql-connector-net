@@ -1,10 +1,10 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <Description>MySql.Data.EntityFramework</Description>
     <Copyright>Copyright (c) 2016, 2021, Oracle and/or its affiliates. All rights reserved.</Copyright>
     <NeutralLanguage>en-US</NeutralLanguage>
-    <Version>8.0.25</Version>
+    <Version>8.0.28</Version>
     <Authors>Oracle</Authors>
     <TargetFrameworks>net452;netstandard2.1;</TargetFrameworks>
     <NoWarn>$(NoWarn);CS1591</NoWarn>
@@ -92,7 +92,7 @@
 
   <ItemGroup>
     <EmbeddedResource Update="Properties\Resources.resx">
-      <Generator>PublicResXFileCodeGenerator</Generator>
+      <Generator>ResXFileCodeGenerator</Generator>
       <LastGenOutput>Resources.Designer.cs</LastGenOutput>
       <CustomToolNamespace />
     </EmbeddedResource>

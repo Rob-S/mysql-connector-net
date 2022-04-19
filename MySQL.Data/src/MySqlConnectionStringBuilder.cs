@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2013, 2020 Oracle and/or its affiliates.
+﻿// Copyright (c) 2013, 2021, Oracle and/or its affiliates.
 //
 // This program is free software; you can redistribute it and/or modify
 // it under the terms of the GNU General Public License, version 2.0, as
@@ -28,6 +28,7 @@
 
 using MySql.Data.common;
 using MySql.Data.Common;
+using MySql.Data.MySqlClient.Authentication;
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
@@ -50,11 +51,10 @@ namespace MySql.Data.MySqlClient
       Options.Add(new MySqlConnectionStringOption("pipe", "pipe name,pipename", typeof(string), "MYSQL", false,
         (msb, sender, value) =>
         {
-#if !NET452
-          throw new PlatformNotSupportedException(string.Format(Resources.OptionNotCurrentlySupported, nameof(PipeName)));
-#else
-          msb.SetValue("pipe", value);
-#endif
+          if (!Platform.IsWindows())
+            throw new PlatformNotSupportedException(string.Format(Resources.OptionNotCurrentlySupported, nameof(PipeName)));
+          else
+            msb.SetValue("pipe", value);
         },
         (msb, sender) => msb.PipeName));
       Options.Add(new MySqlConnectionStringOption("compress", "use compression,usecompression", typeof(bool), false, false,
@@ -70,11 +70,10 @@ namespace MySql.Data.MySqlClient
       Options.Add(new MySqlConnectionStringOption("sharedmemoryname", "shared memory name", typeof(string), "MYSQL", false,
         (msb, sender, value) =>
         {
-#if !NET452
-          throw new PlatformNotSupportedException(string.Format(Resources.OptionNotCurrentlySupported, nameof(SharedMemoryName)));
-#else
-          msb.SetValue("sharedmemoryname", value);
-#endif
+          if (!Platform.IsWindows())
+            throw new PlatformNotSupportedException(string.Format(Resources.OptionNotCurrentlySupported, nameof(SharedMemoryName)));
+          else
+            msb.SetValue("sharedmemoryname", value);
         },
         (msb, sender) => msb.SharedMemoryName));
       Options.Add(new MySqlConnectionStringOption("defaultcommandtimeout", "command timeout,default command timeout", typeof(uint), (uint)30, false,
@@ -100,7 +99,7 @@ namespace MySql.Data.MySqlClient
         (msb, sender) => (uint)msb.values["connectiontimeout"]
         ));
       Options.Add(new MySqlConnectionStringOption("allowloadlocalinfile", "allow load local infile", typeof(bool), false, false));
-      Options.Add(new MySqlConnectionStringOption("allowloadlocalinfileinpath", "allow load local infile in path", typeof(string), "", false));
+      Options.Add(new MySqlConnectionStringOption("allowloadlocalinfileinpath", "allow load local infile in path", typeof(string), string.Empty, false));
 
       // Authentication options.
       Options.Add(new MySqlConnectionStringOption("persistsecurityinfo", "persist security info", typeof(bool), false, false,
@@ -110,7 +109,7 @@ namespace MySql.Data.MySqlClient
         {
           if (!Platform.IsWindows())
             throw new MySqlException("IntegratedSecurity is supported on Windows only");
-#if !NET452
+#if !NETFRAMEWORK
           throw new PlatformNotSupportedException(string.Format(Resources.OptionNotCurrentlySupported, nameof(IntegratedSecurity)));
 #else
           msb.SetValue("Integrated Security", value.ToString().Equals("SSPI", StringComparison.OrdinalIgnoreCase) ? true : value);
@@ -124,6 +123,14 @@ namespace MySql.Data.MySqlClient
         ));
       Options.Add(new MySqlConnectionStringOption("allowpublickeyretrieval", null, typeof(bool), false, false,
         (msb, sender, value) => { msb.SetValue("allowpublickeyretrieval", value); }, (msb, sender) => msb.AllowPublicKeyRetrieval));
+      Options.Add(new MySqlConnectionStringOption("defaultauthenticationplugin", null, typeof(string), string.Empty, false,
+        (msb, sender, value) =>
+        {
+          if (!string.IsNullOrWhiteSpace((string)value)) AuthenticationPluginManager.ValidateAuthenticationPlugin((string)value);
+          msb.SetValue("defaultauthenticationplugin", value);
+        },
+        (msb, sender) => msb.DefaultAuthenticationPlugin));
+      Options.Add(new MySqlConnectionStringOption("ociconfigfile", null, typeof(string), string.Empty, false));
 
       // Other properties.
       Options.Add(new MySqlConnectionStringOption("autoenlist", "auto enlist", typeof(bool), true, false,
@@ -145,7 +152,7 @@ namespace MySql.Data.MySqlClient
       Options.Add(new MySqlConnectionStringOption("useperformancemonitor", "use performance monitor,useperfmon,perfmon", typeof(bool), false, false,
         (msb, sender, value) =>
         {
-#if !NET452
+#if !NETFRAMEWORK
           throw new PlatformNotSupportedException(string.Format(Resources.OptionNotCurrentlySupported, nameof(UsePerformanceMonitor)));
 #else
           msb.SetValue("useperformancemonitor", value);
@@ -436,6 +443,40 @@ namespace MySql.Data.MySqlClient
     {
       get { return (bool)values["allowpublickeyretrieval"]; }
       set { SetValue("allowpublickeyretrieval", value); }
+    }
+
+    /// <summary>
+    /// Gets or sets the default authentication plugin to be used. This plugin takes precedence over
+    /// the server-side default authentication plugin when a valid authentication plugin is specified.
+    /// </summary>
+    /// <remarks>
+    /// The default authentication plugin is mandatory for supporting user-less and password-less Kerberos authentications. 
+    /// If no value is set, it uses the server-side default authentication plugin.
+    /// </remarks>
+    [Category("Authentication")]
+    [DisplayName("DefaultAuthenticationPlugin")]
+    [Description("Enables the setting of an authentication plugin that takes precedence over the server-side" +
+                "default authentication plugin.")]
+    public string DefaultAuthenticationPlugin
+    {
+      get { return (string)values["defaultauthenticationplugin"]; }
+      set { SetValue("defaultauthenticationplugin", value); }
+    }
+
+    /// <summary>
+    /// Gets or sets the OCI config file location.
+    /// </summary>
+    /// <remarks>
+    /// The default values vary depending on the OS. On Windows systems the value is '%HOMEDRIVE%%HOMEPATH%\.oci\config' 
+    /// and for Linux/MacOS systems it is '~/.oci/config'.
+    /// </remarks>
+    [Category("Authentication")]
+    [DisplayName("OciConfigFile")]
+    [Description("Specifies the OCI configuration file location.")]
+    public string OciConfigFile
+    {
+      get { return (string)values["ociconfigfile"]; }
+      set { SetValue("ociconfigfile", value); }
     }
 
     #endregion

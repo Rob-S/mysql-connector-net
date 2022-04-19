@@ -32,6 +32,7 @@ using System.Collections;
 using System.Data;
 using System.Data.Common;
 using System.Globalization;
+using System.IO;
 using System.Threading;
 
 namespace MySql.Data.MySqlClient
@@ -669,6 +670,30 @@ namespace MySql.Data.MySqlClient
       return ResultSet.GetOrdinal(name);
     }
 
+    /// <summary>
+    /// Gets a stream to retrieve data from the specified column.
+    /// </summary>
+    /// <param name="ordinal">The zero-based column ordinal.</param>
+    /// <returns>A stream</returns>
+    public override Stream GetStream(int i)
+    {
+      if (i >= FieldCount)
+        Throw(new IndexOutOfRangeException());
+
+      IMySqlValue val = GetFieldValue(i, false);
+
+      if (!(val is MySqlBinary) && !(val is MySqlGuid))
+        Throw(new MySqlException("GetStream can only be called on binary or guid columns"));
+
+      byte[] bytes = new byte[0];
+      if (val is MySqlBinary)
+        bytes = ((MySqlBinary)val).Value;
+      else
+        bytes = ((MySqlGuid)val).Bytes;
+
+      return new MemoryStream(bytes, false);
+    }
+
     /// <include file='docs/MySqlDataReader.xml' path='docs/GetStringS/*'/>
     public string GetString(string column)
     {
@@ -868,7 +893,7 @@ namespace MySql.Data.MySqlClient
               ResultSet.Close();
               for (int i = 0; i < ResultSet.Fields.Length; i++)
               {
-                if (ResultSet.Fields[i].ColumnName.StartsWith("@"+StoredProcedure.ParameterPrefix, StringComparison.OrdinalIgnoreCase))
+                if (ResultSet.Fields[i].ColumnName.StartsWith("@" + StoredProcedure.ParameterPrefix, StringComparison.OrdinalIgnoreCase))
                 {
                   ResultSet = null;
                   break;
@@ -1017,54 +1042,6 @@ namespace MySql.Data.MySqlClient
         {
           throw;
         }
-      }
-    }
-
-    private void ProcessOutputParameters()
-    {
-      // if we are not 5.5 or later or we are not prepared then we are simulating output parameters
-      // with user variables and they are also string so we have to work some magic with out
-      // column types before we read the data
-      if (!driver.SupportsOutputParameters || !Command.IsPrepared)
-        AdjustOutputTypes();
-
-      // now read the output parameters data row
-      if ((CommandBehavior & CommandBehavior.SchemaOnly) != 0) return;
-      ResultSet.NextRow(CommandBehavior);
-
-      string prefix = "@" + StoredProcedure.ParameterPrefix;
-
-      for (int i = 0; i < FieldCount; i++)
-      {
-        string fieldName = GetName(i);
-        if (fieldName.StartsWith(prefix))
-          fieldName = fieldName.Remove(0, prefix.Length);
-        MySqlParameter parameter = Command.Parameters.GetParameterFlexible(fieldName, true);
-        parameter.Value = GetValue(i);
-      }
-    }
-
-    private void AdjustOutputTypes()
-    {
-      // since MySQL likes to return user variables as strings
-      // we reset the types of the readers internal value objects
-      // this will allow those value objects to parse the string based
-      // return values
-      for (int i = 0; i < FieldCount; i++)
-      {
-        string fieldName = GetName(i);
-        fieldName = fieldName.Remove(0, StoredProcedure.ParameterPrefix.Length + 1);
-        MySqlParameter parameter = Command.Parameters.GetParameterFlexible(fieldName, true);
-
-        IMySqlValue v = MySqlField.GetIMySqlValue(parameter.MySqlDbType);
-        if (v is MySqlBit)
-        {
-          MySqlBit bit = (MySqlBit)v;
-          bit.ReadAsString = true;
-          ResultSet.SetValueObject(i, bit);
-        }
-        else
-          ResultSet.SetValueObject(i, v);
       }
     }
 

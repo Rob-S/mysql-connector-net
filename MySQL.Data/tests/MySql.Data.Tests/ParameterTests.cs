@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2013, 2020, Oracle and/or its affiliates.
+﻿// Copyright (c) 2013, 2021, Oracle and/or its affiliates.
 //
 // This program is free software; you can redistribute it and/or modify
 // it under the terms of the GNU General Public License, version 2.0, as
@@ -26,14 +26,13 @@
 // along with this program; if not, write to the Free Software Foundation, Inc.,
 // 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 
-
-using System;
 using NUnit.Framework;
+using System;
 using System.Data;
 
 namespace MySql.Data.MySqlClient.Tests
 {
-  public partial class ParameterTests : TestBase
+  public class ParameterTests : TestBase
   {
     protected override void Cleanup()
     {
@@ -585,7 +584,7 @@ namespace MySql.Data.MySqlClient.Tests
       ExecuteSQL("CREATE TABLE testbool (id INT (10) UNSIGNED NOT NULL AUTO_INCREMENT, testcol TINYINT(1) DEFAULT NULL, PRIMARY KEY(id))");
       ExecuteSQL("INSERT INTO testbool(testcol) VALUES(0),(1),(1),(NULL),(0),(0),(1)");
 
-      using (var conn = new MySqlConnection(ConnectionSettings.ConnectionString))
+      using (var conn = new MySqlConnection(Settings.ConnectionString))
       {
         conn.Open();
         MySqlCommand cmd = conn.CreateCommand();
@@ -612,7 +611,7 @@ namespace MySql.Data.MySqlClient.Tests
       ExecuteSQL("INSERT INTO `mysql_bug_test` VALUES ('mykey',0);");
       ExecuteSQL("UNLOCK TABLES;");
 
-      var builder = new MySqlConnectionStringBuilder(ConnectionSettings.ConnectionString);
+      var builder = new MySqlConnectionStringBuilder(Settings.ConnectionString);
       builder.CharacterSet = "utf8";
       builder.UseCompression = true;
       builder.TreatTinyAsBoolean = false;
@@ -656,6 +655,7 @@ namespace MySql.Data.MySqlClient.Tests
 
     /// <summary >
     /// Bug #25573071 MYSQLPARAMETER INT ZERO EVALUATED TO NULL
+    /// This fix was reverted since it was wrong implemented. See https://mybug.mysql.oraclecorp.com/orabugs/site/bug.php?id=32050204 for more details
     /// </summary>
     [Test]
     public void ZeroParameterAsNull()
@@ -664,10 +664,34 @@ namespace MySql.Data.MySqlClient.Tests
       ExecuteSQL(@"CREATE TABLE `audit` (`ProviderId` int(11) NOT NULL,`Permanent` tinyint(4) NOT NULL DEFAULT '1')");
       ExecuteSQL(@"insert into `audit` values (1,0);");
       var query = "SELECT * FROM audit t1 WHERE t1.Permanent = ?IsFalse";
-      MySqlCommand cmd = new MySqlCommand(query, Connection);
-      MySqlParameter[] parameters = new[] { new MySqlParameter("IsFalse", 0) };
+      MySqlParameter[] parameters = { new MySqlParameter() { ParameterName = "IsFalse", Value = 0 } };
       var ds = MySqlHelper.ExecuteDataset(Connection.ConnectionString, query, parameters);
       Assert.AreEqual(ds.Tables[0].Rows.Count, 1);
+    }
+
+    /// <summary>
+    /// Bug #32050204 - DEFAULT VALUE FOR MYSQLPARAMETER.VALUE CHANGED FROM NULL TO 0
+    /// This fix reverted the work done in Bug#25573071
+    /// </summary>
+    [Test]
+    public void DefaultNullValue()
+    {
+      ExecuteSQL("CREATE TABLE Test (data INT NULL)");
+      string cmdString = "INSERT INTO Test(data) VALUES(@Data)";
+      using (var cmd = new MySqlCommand(cmdString, Connection))
+      {
+        cmd.Parameters.Add(new MySqlParameter("@Data", MySqlDbType.Int32));
+        cmd.ExecuteNonQuery();
+      }
+
+      using (var command = new MySqlCommand("SELECT data FROM Test", Connection))
+      using (var reader = command.ExecuteReader())
+      {
+        while (reader.Read())
+        {
+          Assert.IsTrue(reader.IsDBNull(0));
+        }
+      }
     }
 
     /// <summary >
@@ -696,7 +720,7 @@ namespace MySql.Data.MySqlClient.Tests
     {
       ExecuteSQL(@"DROP TABLE IF EXISTS `test`");
       ExecuteSQL($"CREATE TABLE `test` (`id` {typeName})");
-      using (var conn = new MySqlConnection(ConnectionSettings.ConnectionString))
+      using (var conn = new MySqlConnection(Settings.ConnectionString))
       {
         conn.Open();
         string sql = "select * from test where id = @ID;";
@@ -731,6 +755,79 @@ namespace MySql.Data.MySqlClient.Tests
 
       cmd.Parameters.Insert(1, new MySqlParameter("lastTest", "test4"));
       Assert.True(cmd.Parameters.IndexOf("lastTest") == 1);
+    }
+
+    /// <summary>
+    /// Bug #13276 Exception on serialize after inserting null value
+    /// </summary>
+    [Test]
+    public void InsertValueAfterNull()
+    {
+      ExecuteSQL("CREATE TABLE Test (id int auto_increment primary key, foo int)");
+
+      MySqlDataAdapter da = new MySqlDataAdapter("SELECT * FROM Test", Connection);
+      MySqlCommand c = new MySqlCommand("INSERT INTO Test (foo) values (?foo)", Connection);
+      c.Parameters.Add("?foo", MySqlDbType.Int32, 0, "foo");
+
+      da.InsertCommand = c;
+      DataTable dt = new DataTable();
+      da.Fill(dt);
+      DataRow row = dt.NewRow();
+      dt.Rows.Add(row);
+      row = dt.NewRow();
+      row["foo"] = 2;
+      dt.Rows.Add(row);
+      da.Update(dt);
+
+      dt.Clear();
+      da.Fill(dt);
+      Assert.AreEqual(2, dt.Rows.Count);
+      Assert.AreEqual(2, dt.Rows[1]["foo"]);
+    }
+
+    /// <summary>
+    /// Bug #20056757	- MYSQLPARAMETER.CLONE MISSED ASSIGN VALUE TO PROPERTY SOURCECOLUMNNULLMAPPING
+    /// At the moment of cloning the parameters, the SourceColumnNullMapping property was missing to copy hence the exception
+    /// </summary>
+    [Test]
+    public void CloneParameterAssignSourceColumnNullMapping()
+    {
+      ExecuteSQL("CREATE TABLE Test (id INT AUTO_INCREMENT, name VARCHAR(10) NULL, PRIMARY KEY(id)); INSERT INTO Test VALUES (1, null)");
+      string query = "SELECT * FROM Test";
+
+      MySqlDataAdapter dataAdapter = new MySqlDataAdapter(query, Connection);
+      MySqlCommandBuilder cb = new MySqlCommandBuilder(dataAdapter);
+      dataAdapter.DeleteCommand = (MySqlCommand)cb.GetDeleteCommand().Clone();
+      DataTable dataTable = new DataTable();
+      dataAdapter.Fill(dataTable);
+
+      using (var cmd = new MySqlCommand(query, Connection))
+        Assert.AreEqual(1, cmd.ExecuteScalar());
+      Assert.AreEqual(1, dataTable.Rows.Count);
+
+      dataTable.Rows[0].Delete();
+      dataAdapter.Update(dataTable);
+
+      using (var cmd = new MySqlCommand(query, Connection))
+        Assert.IsNull(cmd.ExecuteScalar());
+      Assert.AreEqual(0, dataTable.Rows.Count);
+    }
+
+    /// <summary>
+    /// Bug #23343947 - .NET BUG WRITE NULLABLE VALUES
+    /// Initializing of the parameter changed to match same type for DbType and MySqlDbType, String.
+    /// </summary>
+    [Test]
+    public void InitializeParameter()
+    {
+      var cmd = new MySqlCommand();
+      var newParam = cmd.CreateParameter();
+      var newIntParam = new MySqlParameter("newIntParam", 3);
+
+      Assert.AreEqual(MySqlDbType.VarChar, newParam.MySqlDbType);
+      Assert.AreEqual(DbType.String, newParam.DbType);
+      Assert.AreEqual(MySqlDbType.Int32, newIntParam.MySqlDbType);
+      Assert.AreEqual(DbType.Int32, newIntParam.DbType);
     }
   }
 }

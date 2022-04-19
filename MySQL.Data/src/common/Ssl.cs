@@ -1,4 +1,4 @@
-// Copyright (c) 2004, 2020, Oracle and/or its affiliates.
+// Copyright (c) 2004, 2021, Oracle and/or its affiliates.
 //
 // This program is free software; you can redistribute it and/or modify
 // it under the terms of the GNU General Public License, version 2.0, as
@@ -25,7 +25,6 @@
 // You should have received a copy of the GNU General Public License
 // along with this program; if not, write to the Free Software Foundation, Inc.,
 // 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
-
 
 using MySql.Data.common;
 using MySql.Data.MySqlClient;
@@ -60,7 +59,7 @@ namespace MySql.Data.Common
     /// <summary>
     /// Defines the supported TLS protocols.
     /// </summary>
-    private static SslProtocols[] tlsProtocols = new SslProtocols[] { SslProtocols.Tls12, SslProtocols.Tls11, SslProtocols.Tls };
+    private static SslProtocols[] tlsProtocols = new SslProtocols[] { SslProtocols.Tls12 };
     private static Dictionary<string, SslProtocols> tlsConnectionRef = new Dictionary<string, SslProtocols>();
     private static Dictionary<string, int> tlsRetry = new Dictionary<string, int>();
     private static Object thisLock = new Object();
@@ -194,17 +193,14 @@ namespace MySql.Data.Common
         SslProtocols sslProtocolsToUse = (SslProtocols)Enum.Parse(typeof(SslProtocols), _settings.TlsVersion);
         List<SslProtocols> listProtocols = new List<SslProtocols>();
 
-#if NET48 || NETSTANDARD2_1 || NET5_0
+#if NET48 || NETSTANDARD2_1 || NET5_0_OR_GREATER
         if (sslProtocolsToUse.HasFlag((SslProtocols)12288))
           listProtocols.Add((SslProtocols)12288);
 #endif
 
         if (sslProtocolsToUse.HasFlag(SslProtocols.Tls12))
           listProtocols.Add(SslProtocols.Tls12);
-        if (sslProtocolsToUse.HasFlag(SslProtocols.Tls11))
-          listProtocols.Add(SslProtocols.Tls11);
-        if (sslProtocolsToUse.HasFlag(SslProtocols.Tls))
-          listProtocols.Add(SslProtocols.Tls);
+
         tlsProtocols = listProtocols.ToArray();
       }
 
@@ -227,7 +223,7 @@ namespace MySql.Data.Common
         }
         try
         {
-          tlsProtocol = (tlsProtocol == SslProtocols.None) ? SslProtocols.Tls : tlsProtocol;
+          tlsProtocol = (tlsProtocol == SslProtocols.None) ? SslProtocols.Tls12 : tlsProtocol;
           if (!ss.AuthenticateAsClientAsync(_settings.Server, certs, tlsProtocol, false).Wait((int)_settings.ConnectionTimeout * 1000))
             throw new AuthenticationException($"Authentication to host '{_settings.Server}' failed.");
           tlsConnectionRef[connectionId] = tlsProtocol;

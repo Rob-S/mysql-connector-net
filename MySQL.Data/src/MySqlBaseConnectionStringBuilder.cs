@@ -26,17 +26,17 @@
 // along with this program; if not, write to the Free Software Foundation, Inc.,
 // 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 
+using MySql.Data.Common;
 using System;
-using System.Data.Common;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Data.Common;
 using System.Globalization;
 using System.Linq;
-using System.Text;
 using System.Runtime.CompilerServices;
-using MySql.Data.common;
-using static MySql.Data.common.MySqlConnectionStringOption;
 using System.Security.Authentication;
+using System.Text;
+using static MySql.Data.Common.MySqlConnectionStringOption;
 
 namespace MySql.Data.MySqlClient
 {
@@ -58,13 +58,13 @@ namespace MySql.Data.MySqlClient
       Options.Add(new MySqlConnectionStringOption("protocol", "connection protocol,connectionprotocol", typeof(MySqlConnectionProtocol), MySqlConnectionProtocol.Sockets, false,
         (SetterDelegate)((msb, sender, value) =>
         {
-#if !NET452
-         MySqlConnectionProtocol enumValue;
-         if (Enum.TryParse<MySqlConnectionProtocol>(value.ToString(), true, out enumValue))
-         {
-           if (enumValue == MySqlConnectionProtocol.Memory || enumValue == MySqlConnectionProtocol.Pipe)
-             throw new PlatformNotSupportedException(string.Format(Resources.OptionNotCurrentlySupported, $"Protocol={value}"));
-         }
+#if !NETFRAMEWORK
+          MySqlConnectionProtocol enumValue;
+          if (Enum.TryParse<MySqlConnectionProtocol>(value.ToString(), true, out enumValue))
+          {
+            if (!Platform.IsWindows() && (enumValue == MySqlConnectionProtocol.Memory || enumValue == MySqlConnectionProtocol.Pipe))
+              throw new PlatformNotSupportedException(string.Format(Resources.OptionNotCurrentlySupported, $"Protocol={value}"));
+          }
 #endif
           msb.SetValue("protocol", value);
         }),
@@ -74,7 +74,9 @@ namespace MySql.Data.MySqlClient
 
       // Authentication options.
       Options.Add(new MySqlConnectionStringOption("user id", "uid,username,user name,user,userid", typeof(string), "", false));
-      Options.Add(new MySqlConnectionStringOption("password", "pwd", typeof(string), "", false));
+      Options.Add(new MySqlConnectionStringOption("password", "pwd,password1,pwd1", typeof(string), "", false));
+      Options.Add(new MySqlConnectionStringOption("password2", "pwd2", typeof(string), "", false));
+      Options.Add(new MySqlConnectionStringOption("password3", "pwd3", typeof(string), "", false));
       Options.Add(new MySqlConnectionStringOption("certificatefile", "certificate file", typeof(string), null, false));
       Options.Add(new MySqlConnectionStringOption("certificatepassword", "certificate password,ssl-ca-pwd", typeof(string), null, false));
       Options.Add(new MySqlConnectionStringOption("certificatestorelocation", "certificate store location", typeof(MySqlCertificateStoreLocation), MySqlCertificateStoreLocation.None, false));
@@ -83,8 +85,6 @@ namespace MySql.Data.MySqlClient
         (SetterDelegate)((msb, sender, value) =>
         {
           MySqlSslMode newValue = (MySqlSslMode)Enum.Parse(typeof(MySqlSslMode), value.ToString(), true);
-          if (newValue == MySqlSslMode.None && msb.TlsVersion != null)
-            throw new ArgumentException(Resources.InvalidTlsVersionAndSslModeOption, nameof(TlsVersion));
           msb.SetValue("sslmode", newValue);
         }),
         (GetterDelegate)((msb, sender) => { return msb.SslMode; })));
@@ -101,32 +101,8 @@ namespace MySql.Data.MySqlClient
             msb.SetValue("tlsversion", null);
             return;
           }
-          if (msb.SslMode == MySqlSslMode.None)
-            throw new ArgumentException(Resources.InvalidTlsVersionAndSslModeOption, nameof(TlsVersion));
-          string strValue = ((string)value).TrimStart('[', '(').TrimEnd(']', ')').Replace(" ", string.Empty);
-          if (string.IsNullOrWhiteSpace(strValue) || strValue == ",")
-            throw new ArgumentException(Resources.TlsVersionNotSupported);
-          SslProtocols protocols = SslProtocols.None;
-          foreach (string opt in strValue.Split(new char[] { ',' }, StringSplitOptions.RemoveEmptyEntries))
-          {
-            string tls = opt.ToLowerInvariant().Replace("v", "").Replace(".", "");
-            if (tls.Equals("tls1") || tls.Equals("tls10"))
-              tls = "tls";
-            SslProtocols protocol;
-            if (!tls.StartsWith("tls", StringComparison.OrdinalIgnoreCase)
-              || (!Enum.TryParse<SslProtocols>(tls, true, out protocol) && !tls.Equals("tls13", StringComparison.OrdinalIgnoreCase)))
-            {
-              string info = string.Empty;
-#if NET48 || NETSTANDARD2_1
-              info = ", TLSv1.3";
-#endif
-              throw new ArgumentException(string.Format(Resources.InvalidTlsVersionOption, opt, info), nameof(TlsVersion));
-            }
-            protocols |= protocol;
-          }
-          string strProtocols = protocols == SslProtocols.None ? string.Empty : Enum.Format(typeof(SslProtocols), protocols, "G");
-          strProtocols = (value.ToString().Equals("Tls13", StringComparison.OrdinalIgnoreCase)
-          || value.ToString().Equals("Tlsv1.3", StringComparison.OrdinalIgnoreCase)) ? "Tls13" : strProtocols;
+
+          string strProtocols = TlsValidation(value);
           msb.SetValue("tlsversion", strProtocols);
         }),
         (GetterDelegate)((msb, sender) => { return msb.TlsVersion; })));
@@ -136,6 +112,45 @@ namespace MySql.Data.MySqlClient
 
       // Language and charset options.
       Options.Add(new MySqlConnectionStringOption("characterset", "character set,charset", typeof(string), "", false));
+    }
+
+    private static string TlsValidation(object value)
+    {
+      string strValue = ((string)value).TrimStart('[', '(').TrimEnd(']', ')').Replace(" ", string.Empty);
+      string strProtocols;
+      SslProtocols protocols = SslProtocols.None;
+      bool unsupported = false;
+      bool nonValid = false;
+
+      if (string.IsNullOrWhiteSpace(strValue) || strValue == ",")
+        throw new ArgumentException(Resources.TlsVersionsEmpty);
+
+      foreach (string opt in strValue.Split(new char[] { ',' }, StringSplitOptions.RemoveEmptyEntries))
+      {
+        string tls = opt.ToLowerInvariant().Replace("v", "").Replace(".", "");
+        tls = tls.Equals("tls1") || tls.Equals("tls10") ? "tls" : tls;
+
+        if (Enum.TryParse<SslProtocols>(tls, true, out SslProtocols protocol) && ((int)protocol) >= 3072)
+          protocols |= protocol;
+        else if (protocol.HasFlag(SslProtocols.Tls) || protocol.HasFlag(SslProtocols.Tls11))
+          unsupported = true;
+        else
+          nonValid = true;
+      }
+
+      if (protocols == SslProtocols.None)
+      {
+        if (unsupported)
+          throw new ArgumentException(Resources.TlsUnsupportedVersions);
+        if (nonValid)
+          throw new ArgumentException(Resources.TlsNonValidProtocols);
+      }
+
+      strProtocols = protocols == SslProtocols.None ? string.Empty : Enum.Format(typeof(SslProtocols), protocols, "G");
+      strProtocols = (value.ToString().Equals("Tls13", StringComparison.OrdinalIgnoreCase)
+      || value.ToString().Equals("Tlsv1.3", StringComparison.OrdinalIgnoreCase)) ? "Tls13" : strProtocols;
+
+      return strProtocols;
     }
 
     /// <summary>
@@ -246,6 +261,32 @@ namespace MySql.Data.MySqlClient
     }
 
     /// <summary>
+    /// Gets or sets the password for a second authentication that should be used to make a connection.
+    /// </summary>
+    [Category("Security")]
+    [Description("Indicates the password for a second authentication to be used when connecting to the data source.")]
+    [RefreshProperties(RefreshProperties.All)]
+    [PasswordPropertyText(true)]
+    public string Password2
+    {
+      get { return (string)values["password2"]; }
+      set { SetValue("password2", value); }
+    }
+
+    /// <summary>
+    /// Gets or sets the password for a third authentication that should be used to make a connection.
+    /// </summary>
+    [Category("Security")]
+    [Description("Indicates the password for a third authentication to be used when connecting to the data source.")]
+    [RefreshProperties(RefreshProperties.All)]
+    [PasswordPropertyText(true)]
+    public string Password3
+    {
+      get { return (string)values["password3"]; }
+      set { SetValue("password3", value); }
+    }
+
+    /// <summary>
     ///  Gets or sets the path to the certificate file to be used.
     /// </summary>
     [Category("Authentication")]
@@ -326,7 +367,7 @@ namespace MySql.Data.MySqlClient
     /// Sets the TLS versions to use in a <see cref="SslMode">SSL connection</see> to the server.
     /// </summary>
     /// <example>
-    /// Tls version=TLSv1.1,TLSv1.2;
+    /// Tls version=TLSv1.2,TLSv1.3;
     /// </example>
     [DisplayName("TLS version")]
     [Category("Security")]

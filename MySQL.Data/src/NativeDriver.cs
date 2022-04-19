@@ -65,7 +65,7 @@ namespace MySql.Data.MySqlClient
     const string AuthenticationWindowsUser = "auth_windows";
 
     // Regular expression that checks for GUID format 
-    private static Regex guidRegex = new Regex(@"(?i)^[0-9A-F]{8}[-](?:[0-9A-F]{4}[-]){3}[0-9A-F]{12}$"); 
+    private static Regex guidRegex = new Regex(@"(?i)^[0-9A-F]{8}[-](?:[0-9A-F]{4}[-]){3}[0-9A-F]{12}$");
 
     public NativeDriver(Driver owner)
     {
@@ -135,29 +135,23 @@ namespace MySql.Data.MySqlClient
       return packet = stream.ReadPacket();
     }
 
-    internal void ReadOk(bool read)
+    internal OkPacket ReadOk(bool read)
     {
       try
       {
         if (read)
           packet = stream.ReadPacket();
-        byte marker = (byte)packet.ReadByte();
-        if (marker != 0)
+
+        byte header = packet.ReadByte();
+        if (header != 0)
         {
           throw new MySqlException("Out of sync with server", true, null);
         }
 
-        packet.ReadFieldLength(); /* affected rows */
-        packet.ReadFieldLength(); /* last insert id */
-        if (packet.HasMoreData)
-        {
-          serverStatus = (ServerStatusFlags)packet.ReadInteger(2);
-          packet.ReadInteger(2);  /* warning count */
-          if (packet.HasMoreData)
-          {
-            packet.ReadLenString();  /* message */
-          }
-        }
+        OkPacket okPacket = new OkPacket(packet);
+        serverStatus = okPacket.ServerStatusFlags;
+
+        return okPacket;
       }
       catch (MySqlException ex)
       {
@@ -193,14 +187,13 @@ namespace MySql.Data.MySqlClient
       // connect to one of our specified hosts
       try
       {
-        baseStream = StreamCreator.GetStream(Settings,ref networkStream);
+        baseStream = StreamCreator.GetStream(Settings, ref networkStream);
         if (Settings.IncludeSecurityAsserts)
           MySqlSecurityPermission.CreatePermissionSet(false).Assert();
       }
-      catch (System.Security.SecurityException)
-      {
-        throw;
-      }
+      catch (System.Security.SecurityException) { throw; }
+      catch (TimeoutException) { throw; }
+      catch (AggregateException) { throw; }
       catch (Exception ex)
       {
         throw new MySqlException(Resources.UnableToConnectToHost,
@@ -211,7 +204,7 @@ namespace MySql.Data.MySqlClient
             (int)MySqlErrorCode.UnableToConnectToHost);
 
       int maxSinglePacket = 255 * 255 * 255;
-      stream = new MySqlStream(baseStream, Encoding, false, networkStream.Socket);
+      stream = new MySqlStream(baseStream, Encoding, false, networkStream?.Socket);
 
       stream.ResetTimeout((int)Settings.ConnectionTimeout * 1000);
 
@@ -249,15 +242,18 @@ namespace MySql.Data.MySqlClient
       seedPart1.CopyTo(encryptionSeed, 0);
       seedPart2.CopyTo(encryptionSeed, seedPart1.Length);
 
-      string authenticationMethod = "";
-      if ((serverCaps & ClientFlags.PLUGIN_AUTH) != 0)
+      string authenticationMethod = Settings.DefaultAuthenticationPlugin;
+      if (string.IsNullOrWhiteSpace(authenticationMethod))
       {
-        authenticationMethod = packet.ReadString();
-      }
-      else
-      {
-        // Some MySql versions like 5.1, don't give name of plugin, default to native password.
-        authenticationMethod = "mysql_native_password";
+        if ((serverCaps & ClientFlags.PLUGIN_AUTH) != 0)
+        {
+          authenticationMethod = packet.ReadString();
+        }
+        else
+        {
+          // Some MySql versions like 5.1, don't give name of plugin, default to native password.
+          authenticationMethod = "mysql_native_password";
+        }
       }
 
       // based on our settings, set our connection flags
@@ -269,18 +265,26 @@ namespace MySql.Data.MySqlClient
       packet.WriteByte(33); //character set utf-8
       packet.Write(new byte[23]);
 
+      // Server doesn't support SSL connections
       if ((serverCaps & ClientFlags.SSL) == 0)
       {
-        if (Settings.SslMode != MySqlSslMode.None &&
-            Settings.SslMode != MySqlSslMode.Preferred)
+        if (Settings.SslMode != MySqlSslMode.None && Settings.SslMode != MySqlSslMode.Prefered)
         {
-          // Client requires SSL connections.
-          string message = String.Format(Resources.NoServerSSLSupport,
-              Settings.Server);
-          throw new MySqlException(message);
+          throw new MySqlException(string.Format(Resources.NoServerSSLSupport,
+            Settings.Server));
         }
       }
-      else if (Settings.SslMode != MySqlSslMode.None)
+      // Current connection doesn't support SSL connections
+      else if ((connectionFlags & ClientFlags.SSL) == 0)
+      {
+        if (Settings.SslMode != MySqlSslMode.None && Settings.SslMode != MySqlSslMode.Prefered)
+        {
+          throw new MySqlException(string.Format(Resources.SslNotAllowedForConnectionProtocol,
+            Settings.ConnectionProtocol));
+        }
+      }
+      // Server and connection supports SSL connections and Client are requisting a secure connection
+      else
       {
         stream.SendPacket(packet);
         stream = new Ssl(
@@ -307,7 +311,7 @@ namespace MySql.Data.MySqlClient
       // if we are using compression, then we use our CompressedStream class
       // to hide the ugliness of managing the compression
       if ((connectionFlags & ClientFlags.COMPRESS) != 0)
-        stream = new MySqlStream(baseStream, Encoding, true, networkStream.Socket);
+        stream = new MySqlStream(baseStream, Encoding, true, networkStream?.Socket);
 
       // give our stream the server version we are connected to.  
       // We may have some fields that are read differently based 
@@ -367,7 +371,9 @@ namespace MySql.Data.MySqlClient
         flags |= ClientFlags.SECURE_CONNECTION;
 
       // if the server is capable of SSL and the user is requesting SSL
-      if ((serverCaps & ClientFlags.SSL) != 0 && Settings.SslMode != MySqlSslMode.None)
+      if ((serverCaps & ClientFlags.SSL) != 0 && Settings.SslMode != MySqlSslMode.None
+        && Settings.ConnectionProtocol != MySqlConnectionProtocol.NamedPipe
+        && Settings.ConnectionProtocol != MySqlConnectionProtocol.SharedMemory)
         flags |= ClientFlags.SSL;
 
       // if the server supports output parameters, then we do too
@@ -383,6 +389,17 @@ namespace MySql.Data.MySqlClient
 
       if ((serverCaps & ClientFlags.CAN_HANDLE_EXPIRED_PASSWORD) != 0)
         flags |= ClientFlags.CAN_HANDLE_EXPIRED_PASSWORD;
+
+      // if the server supports query attributes
+      if ((serverCaps & ClientFlags.CLIENT_QUERY_ATTRIBUTES) != 0)
+        flags |= ClientFlags.CLIENT_QUERY_ATTRIBUTES;
+
+      // if the server supports MFA
+      if ((serverCaps & ClientFlags.MULTI_FACTOR_AUTHENTICATION) != 0)
+        flags |= ClientFlags.MULTI_FACTOR_AUTHENTICATION;
+
+      // need this to get server session trackers
+      flags |= ClientFlags.CLIENT_SESSION_TRACK;
 
       connectionFlags = flags;
     }
@@ -415,7 +432,7 @@ namespace MySql.Data.MySqlClient
     /// <summary>
     /// Query is the method that is called to send all queries to the server
     /// </summary>
-    public void SendQuery(MySqlPacket queryPacket)
+    public void SendQuery(MySqlPacket queryPacket, int paramsPosition)
     {
       warnings = 0;
       queryPacket.SetByte(4, (byte)DBCmd.QUERY);
@@ -484,7 +501,7 @@ namespace MySql.Data.MySqlClient
     {
       try
       {
-        if (stream.Socket==null && networkStream.Socket!=null)
+        if (stream.Socket == null && networkStream?.Socket != null)
         {
           stream.Socket = networkStream.Socket;
         }
@@ -532,16 +549,14 @@ namespace MySql.Data.MySqlClient
         // again if necessary.
         serverStatus &= ~(ServerStatusFlags.AnotherQuery |
                           ServerStatusFlags.MoreResults);
-        affectedRow = (int)packet.ReadFieldLength();
-        insertedId = (long)packet.ReadFieldLength();
 
-        serverStatus = (ServerStatusFlags)packet.ReadInteger(2);
-        warnings += packet.ReadInteger(2);
-        if (packet.HasMoreData)
-        {
-          packet.ReadLenString(); //TODO: server message
-        }
+        OkPacket okPacket = new OkPacket(packet);
+        affectedRow = (int)okPacket.AffectedRows;
+        insertedId = okPacket.LastInsertId;
+        serverStatus = okPacket.ServerStatusFlags;
+        warnings += okPacket.WarningCount;
       }
+
       return fieldCount;
     }
 
@@ -620,7 +635,7 @@ namespace MySql.Data.MySqlClient
       }
 
       if (!isNull && (valObject.MySqlDbType is MySqlDbType.Guid && !Settings.OldGuids) &&
-        !guidRegex.IsMatch(Encoding.GetString(packet.Buffer, packet.Position, (int)length)))
+        (length > 0 && !guidRegex.IsMatch(Encoding.GetString(packet.Buffer, packet.Position, (int)length))))
       {
         field.Type = MySqlDbType.String;
         valObject = field.GetValueObject();
@@ -883,11 +898,10 @@ namespace MySql.Data.MySqlClient
 
           string value = (string)property.GetValue(attrs, null);
           connectAttrs += string.Format("{0}{1}", (char)name.Length, name);
-          connectAttrs += string.Format("{0}{1}", (char)value.Length, value);
+          connectAttrs += string.Format("{0}{1}", (char)Encoding.UTF8.GetBytes(value).Length, value);
         }
         packet.WriteLenString(connectAttrs);
       }
     }
   }
-
 }

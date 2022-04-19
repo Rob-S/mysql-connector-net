@@ -1,4 +1,4 @@
-// Copyright (c) 2013, 2020 Oracle and/or its affiliates.
+// Copyright (c) 2013, 2021, Oracle and/or its affiliates.
 //
 // This program is free software; you can redistribute it and/or modify
 // it under the terms of the GNU General Public License, version 2.0, as
@@ -32,6 +32,7 @@ using System.Transactions;
 using System.Data.Common;
 using System.Data;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace MySql.Data.MySqlClient.Tests
 {
@@ -315,7 +316,7 @@ namespace MySql.Data.MySqlClient.Tests
     [Test]
     public void ManualEnlistment()
     {
-#if NETCOREAPP3_1 || NET5_0
+#if NETCOREAPP3_1 || NET5_0 || NET6_0
       if (!System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Windows)) Assert.Ignore();
 #endif
       ExecuteSQL("DROP TABLE IF EXISTS Test");
@@ -643,7 +644,7 @@ namespace MySql.Data.MySqlClient.Tests
     [Test]
     public void ScopeTimeoutWithMySqlHelper()
     {
-#if NETCOREAPP3_1 || NET5_0
+#if NETCOREAPP3_1 || NET5_0 || NET6_0
       if (!System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Windows)) Assert.Ignore();
 #endif
       ExecuteSQL("DROP TABLE IF EXISTS Test");
@@ -828,6 +829,108 @@ namespace MySql.Data.MySqlClient.Tests
           if (i > 1) connection.Close();
           trx.Dispose();
         }
+      }
+    }
+
+    /// <summary>
+    /// Bug #33123597	IF AUTOCOMMIT=0, "SHOW COLLATION" VIA OPEN() WILL CAUSE BEGINTRANSACTION() TO FAIL
+    /// </summary>
+    [Test]
+    public void TransactionWithAutoCommit()
+    {
+      ExecuteSQL("DROP TABLE IF EXISTS Test");
+      ExecuteSQL("create table Test(id int)");
+      ExecuteSQL("set autocommit = 0;");
+
+      MySqlConnectionStringBuilder sb = new MySqlConnectionStringBuilder(Settings.ConnectionString);
+      sb.PersistSecurityInfo = true;
+      sb.Pooling = true;
+      sb.SslMode = MySqlSslMode.None;
+
+      using (var connection = new MySqlConnection(sb.ConnectionString))
+      {
+        connection.Open();
+        var transaction = connection.BeginTransaction();
+        Assert.IsNotNull(transaction);
+        var myCommand = connection.CreateCommand();
+        myCommand.CommandText = "INSERT INTO `Test` VALUES (1);";
+        var result = myCommand.ExecuteNonQuery();
+        transaction.Commit();
+      }
+
+      ExecuteSQL("set autocommit = 1;");
+    }
+
+    /// <summary>
+    /// Bug #28662512	ASYNC, TRANSACTIONSCOPE.DISPOSE: "ALREADY AN OPEN DATAREADER ASSOCIATED"
+    /// </summary>
+    [Test]
+    [Ignore("If required run manually")]
+    public void TransactionScopeDispose()
+    {
+      ExecuteSQL(@"CREATE TABLE `keyvalue` (
+      `id` bigint(20) unsigned NOT NULL,
+      `name1` varchar(250),
+      `name2` varchar(250),
+      `name3` varchar(250),
+      `name4` varchar(250),
+      PRIMARY KEY(`id`, name1(10))
+      ) ENGINE = innodb; ");
+
+      for (int i = 0; i < 1000; i++)
+      {
+        var id = i < 5 ? i + 1 : i + 1000;
+        var sql = $"insert into `keyvalue` values ({id}, md5(rand() * 1000000), md5(rand() * 1000000), md5(rand() * 1000000), md5(rand() * 1000000));";
+        ExecuteSQL(sql);
+      }
+      var cs = $"server={Host};port={Port};Database={Connection.Settings.Database};Uid={Connection.Settings.UserID};password={Connection.Settings.Password};ssl-mode=none; ";
+      PerformQueriesAtIntervals(TimeSpan.FromMilliseconds(70),
+      connectionString: cs, tableName: "keyvalue")
+      .GetAwaiter().GetResult();
+    }
+
+    private static async Task PerformQueriesAtIntervals(TimeSpan interval, string connectionString, string tableName)
+    {
+      for (int i = 0; i < 151; i++)
+      {
+        Task.Run(() => PerformQuery(connectionString, tableName));
+        await Task.Delay(interval);
+      } 
+    }
+
+    private static async Task PerformQuery(string connectionString, string tableName)
+    {
+      try
+      {
+        using (var transactionScope = new System.Transactions.TransactionScope(
+            System.Transactions.TransactionScopeOption.Required,
+            new System.Transactions.TransactionOptions()
+            {
+              IsolationLevel = System.Transactions.IsolationLevel.ReadCommitted,
+              Timeout = TimeSpan.FromMinutes(10)
+            },
+        System.Transactions.TransactionScopeAsyncFlowOption.Enabled))
+        {
+          await SelectStarLimit1(connectionString, tableName);
+          var delay = TimeSpan.FromSeconds(10);
+          await Task.Delay(delay);
+          transactionScope.Complete();
+        }
+      }
+      catch (Exception e)
+      {
+        Assert.Fail(e.Message);
+      }
+    }
+
+    private static async Task SelectStarLimit1(string connectionString, string tableName)
+    {
+      using (var connection = new MySqlConnection(connectionString))
+      using (var command = connection.CreateCommand())
+      {
+        command.CommandText = $"SELECT * FROM {tableName} LIMIT 1";
+        await connection.OpenAsync();
+        await command.ExecuteNonQueryAsync();
       }
     }
 

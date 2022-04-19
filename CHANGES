@@ -1,3 +1,55 @@
+8.0.28
+- Added support for .NET 6.0 (WL14734).
+- Added support for multifactor authentication (WL14653).
+- Removed support for the TLSv1.0 and TLSv1.1 protocols (WL14811).
+- Fixed a bug caused by the mishandling of parameters and query attributes (Oracle Bug #33380176).
+- Added missing summaries to MySql EF Core types (Oracle Bug #33513153).
+- Changed access modifier from public to internal for Resources file in EF and Web projects (Oracle Bug #33513545).
+- Improved the test suite configuration (WL14662).
+- Fixed wrong type classification in the API documentation (Oracle Bug #33509644).
+- Fixed unexpected behavior when multiple hosts are used and the first fails with a MySQL exception (Oracle Bug #30581109).
+- Added support for EF Core 6 (WL14735).
+- Fixed a bug that occurred when the OpenAsync method is invoked with multithreading (MySQL Bug #92465, Oracle Bug #28662512).
+- Fixed a bug that occurred when trying to retrieve the IndexColumns schema on a database that has a FULLTEXT index defined (MySQL Bug #75301, Oracle Bug #20266825).
+- Fixed a bug that occurred when accessing a database in which the character set equals "utf8mb3" (MySQL Bug #105516, Oracle Bug #33556024).
+- Fixed a bug that occurred when cloning a parameter to ensure the SourceColumnNullMapping property is copied with the right value (MySQL Bug #74533, Oracle Bug #20056757).
+- Fixed how the length of connection attribute values are calculated for sending across the wire (MySQL Bug #92789, Oracle Bug #28824591).
+- Added missing implementation of the IConvertible interface for type MySqlDateTime (MySQL Bug #82661, Oracle Bug #24495619).
+- Fixed how parameters are created, ensuring that the values of type DbType and MySQLDbType match (MySQL Bug #81586, Oracle Bug #23343947).
+- Fixed wrong setting of the default value in integral type parameters (MySQL Bug #101253, Oracle Bug #32050204).
+- Removed an extra query when inserting multiple batched rows using MySqlDataAdapter (MySQL Bug #71626, Oracle Bug #20328929).
+- Fixed a bug that occurred when reading a zero time value after reading a nonzero time value (MySQL Bug #105209, Oracle Bug #33470147).
+- Fixed a bug that prevented the use of microseconds in a timespan value when using prepared statements (MySQL Bug #103801, Oracle Bug #32933120).
+- Fixed a bug caused by a missing implementation of the GetStream method for the MySqlDataReader (MySQL Bug #93374, Oracle Bug #28980953).
+- Fixed wrong behavior when doing a batch insert and the packet is larger than max_allowed_packet (MySQL Bug #80693, Oracle Bug #22913833).
+
+
+8.0.27
+- Added support for reading and processing session trackers (WL14678).
+- Added client-side Kerberos authentication plugin support for Windows (WL14654).
+- Added support for the OCI IAM authentication plugin (WL14708).
+- Fixed a bug that prevented connections using "Preferred" SSL mode when the server did not support secure connections (MySQL Bug #104541, OracleBug Bug #33191344).
+- Fixed a bug that occurred when creating a connection and a new transaction is initiated using a server with variable autocommit set globally to zero (Oracle Bug #33123597).
+- Changed the API docs generator tool from Sandcastle to DocFX (WL14117).
+- Migrated the current QA test suite to the main repository (WL14389).
+- Fixed a bug that prevented querying CHAR(36) data type columns when using prepared commands (MySQL Bug #103390, Oracle Bug #32938630).
+- Fixed a bug that prevented the use of fully qualified procedures or functions names (MySQL Bug #104244, Oracle Bug #33097912).
+
+
+8.0.26
+- Deprecated TLSv1.0 and TLSv1.1 (WL14554).
+- Added support for the Kerberos authentication plugin (WL14429).
+- Added support for query attributes (WL14209).
+- Fixed inconsistent behavior of the ReplaceOne and AddOrReplaceOne methods in the MySqlX.XDevAPI namespace (MySQL Bug #103310, Oracle Bug #32763765).
+- Fixed a bug that prevented connections using Named Pipes and Shared Memory connection protocols (Oracle Bug #32853205).
+- Removed the support for Kerberos authentication on Windows (Oracle Bug #32867404).
+- Added support for the EF Core 6.0 preview release (WL14578).
+- Added descriptions and renamed the MySqlGuidFormat enumeration (was MySQLGuidFormat) (Oracle Bug #32651245).
+- Removed unnecessary references in the MySql.Web project (MySQL Bug #103433, Oracle Bug #32805002).
+- Added the Connector/NET assemblies into the MSI file and ZIP Package, target Frameworks included are .NET Framework 4.5.2, .NET Framework 4.8, .NET Standard 2.0, .NET Standard 2.1 and .NET 5.0  (WL14616).
+- Fixed an error provoked by a duplicate schema name when using Entity Framework (MySQL Bug #101236, Oracle Bug #32358174).
+
+
 8.0.25
 - This release contains no functional changes and is published to align the version number with the MySQL Server 8.0.25 release.
 
@@ -6,15 +58,14 @@
 - Added support for the SASL authentication protocol using the GSSAPI/Kerberos method (WL14210).
 - Added a more descriptive message for when a connection is closed by server due to a timeout (WL14393).
 - Added Support for connection close notification (WL14208).
-- Fixed an error provoked by a duplicate schema name when using Entity Framework (MySQL Bug #101236, Oracle Bug #32358174).
 - Fixed a bug that affected driver performance by incrementing the execution time (MySQL Bug #101714, Oracle Bug #32386454).
 - Removed the "Ignore Prepare" connection string option (Oracle Bug #31872906).
 - Fixed bad handling of NULL values for GUID data type columns (MySQL Bug #101252, Oracle Bug #32049837).
-- Added missing data type mappings to Entity Framework Core projects.(MySQL Bug #102381, Oracle Bug #32424742).
+- Added missing data type mappings to Entity Framework Core projects (MySQL Bug #102381, Oracle Bug #32424742).
 - Fixed a bug that interpreted the pound symbol in a JSON column incorrectly when using accent sensitive collation (MySQL Bug #102393, Oracle Bug #32429236).
 - Added .NET 4.8 to the non-supported frameworks for using deflate_stream compression algorithm (Oracle Bug #32488373).
 - Added GUID mapping to EntityFrameworkCore (MySQL Bug #93398, Oracle Bug #32173133).
-- Contribution: Added error codes to handle different types of exceptions. (MySQL Bug #101592, Oracle Bug #32150115). Thanks to Stanislav Revin for the contribution.
+- Contribution: Added error codes to handle different types of exceptions (MySQL Bug #101592, Oracle Bug #32150115). Thanks to Stanislav Revin for the contribution.
 - Removed the SSH tunneling feature (WL14562).
 
 
@@ -120,7 +171,7 @@
 - MySqlX: Added support for utf8mb4 binary no-pad collation (WL13099).
 - MySqlX: Removed a limitation preventing the creation of an index on document fields that contains arrays (WL12176).
 - Fix to correct wrong TimeZone returned when using MySqlDataReader['columnName'] to get DateTime type values (Oracle Bug #28156187).
-- Contribution added: Add CreateCommandBuilder and CreateDataAdapter to MySqlClientFactory (MySQL Bug #92206, Oracle Bug #28560189). Thanks to Cédric Luthi for the contribution.
+- Contribution added: Add CreateCommandBuilder and CreateDataAdapter to MySqlClientFactory (MySQL Bug #92206, Oracle Bug #28560189). Thanks to CÃ©dric Luthi for the contribution.
 - Fix null DbDataAdapter and DbCommandBuilder objects when using CreateDataAdapter and CreateCommandBuilder respectively (MySQL Bug #88660, Oracle Bug #27292344).
 
 
@@ -164,7 +215,7 @@
 - MySqlX: Fixed bug that throws an exception when using Set and Unset for an alphanumeric field (Oracle Bug #28094094).
 - MySqlX: Added support for session pooling (WL-11841).
 - Fix to correct wrong TimeZone returned when using MySqlDataReader['columnName'] to get DateTime type values (Oracle Bug #28156187).
-- Contribution added: Add CreateCommandBuilder and CreateDataAdapter to MySqlClientFactory (MySQL Bug #92206, Oracle Bug #28560189). Thanks to Cédric Luthi for the contribution.
+- Contribution added: Add CreateCommandBuilder and CreateDataAdapter to MySqlClientFactory (MySQL Bug #92206, Oracle Bug #28560189). Thanks to CÃ©dric Luthi for the contribution.
 - Fix null DbDataAdapter and DbCommandBuilder objects when using CreateDataAdapter and CreateCommandBuilder respectively (MySQL Bug #88660, Oracle Bug #27292344).
 - Re-introduced the Preferred SSL Mode as the default value for the classic protocol (MySQL Bug#92533, Oracle Bug #28687769).
 
@@ -201,7 +252,7 @@
 - Fix to correct unexpected ColummSize and IsLong values returned by MySqlDataReader.GetSchemaTable when using LongText and LongBlob data types. (MySQL Bug #87876, Oracle Bug #26876592)
 - Fix to correct the wrong NumericPrecision value returned by MySqlDataReader.GetSchemaTable when NumericScale is 0 for Decimal data types. (MySQL Bug #88058, Oracle Bug #26954812)
 - Added support for MySQL 8 server features (WL11326).
-- Fix to avoid raising an exception during the DbContext setup. Thanks to Cédric Luthi for his contribution. (MySQL Bug #89134, Oracle Bug #25185319)
+- Fix to avoid raising an exception during the DbContext setup. Thanks to CÃ©dric Luthi for his contribution. (MySQL Bug #89134, Oracle Bug #25185319)
 - Fixed a problem in which NuGet packages could not be installed from within Visual Studio 2015 (MySQL Bug #88838, Oracle Bug #27251839).
 - Fix for bug: could not load file or assembly MySql.ConnectorInstaller when using web providers (MySQL Bug #88544, Oracle Bug #27457398).
 - Fix to enable the creation of an Entity Framework model from a database, also called the database-first approach (MySQL Bug 79163, Oracle Bug #22173048).

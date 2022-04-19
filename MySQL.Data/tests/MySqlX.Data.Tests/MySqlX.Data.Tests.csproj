@@ -1,14 +1,14 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <Title>MySql.Data.Tests</Title>
     <Description>MySql.Data.Tests Class Library</Description>
     <Copyright>Copyright (c) 2016, 2021, Oracle and/or its affiliates. All rights reserved.</Copyright>
-    <Version>8.0.25</Version>
+    <Version>8.0.28</Version>
     <Authors>Oracle</Authors>
     <Company>Oracle</Company>
     <Product>MySql.Data.Tests</Product>
-    <TargetFrameworks>net5.0;netcoreapp3.1;net452;net48;</TargetFrameworks>
+    <TargetFrameworks>net6.0;net5.0;netcoreapp3.1;net452;net48;</TargetFrameworks>
     <PackageId>MySqlx.Data.Tests</PackageId>
     <PackageTags>MySql;.NET Connector;MySql Connector/NET;netcore;.Net Core;MySql Conector/Net Core;coreclr;C/NET;C/Net Core</PackageTags>
     <PackageIconUrl>http://www.mysql.com/common/logos/logo-mysql-170x115.png</PackageIconUrl>
@@ -51,10 +51,6 @@
     </EmbeddedResource>
   </ItemGroup>
 
-  <PropertyGroup Condition=" '$(TargetFramework)' == 'net5.0' ">
-    <DefineConstants>$(DefineConstants);NET5_0</DefineConstants>
-  </PropertyGroup>
-
   <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
     <DefineConstants>$(DefineConstants);TRACE;DEBUG</DefineConstants>
     <PreserveCompilationContext>true</PreserveCompilationContext>
@@ -66,9 +62,10 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="16.6.1" />
-    <PackageReference Include="NUnit" Version="3.12.0" />
-    <PackageReference Include="NUnit3TestAdapter" Version="3.16.1" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.0.0" />
+    <PackageReference Include="NUnit" Version="3.13.2" />
+    <PackageReference Include="NUnit3TestAdapter" Version="4.0.0" />
+    <PackageReference Include="NunitXml.TestLogger" Version="3.0.107" />
     <EmbeddedResource Include="Properties\CreateUsers.sql" />
   </ItemGroup>
 
@@ -98,6 +95,9 @@
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </Content>
     <Content Update="..\MySql.Data.Tests\certificates\client-key_dummy.pem">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Update="..\MySql.Data.Tests\certificates\client-incorrect.pfx">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </Content>
     <Content Update="..\MySql.Data.Tests\certificates\server-cert.pem">

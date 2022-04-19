@@ -46,7 +46,7 @@ namespace MySql.Data.MySqlClient
     protected MySqlConnectionStringBuilder ConnectionString;
     protected DateTime creationTime;
     protected string serverCharSet;
-    protected Dictionary<string,string> serverProps;
+    protected Dictionary<string, string> serverProps;
     internal int timeZoneOffset;
     private bool firstResult;
     protected IDriver handler;
@@ -105,7 +105,7 @@ namespace MySql.Data.MySqlClient
 
     protected internal int ConnectionCharSetIndex { get; set; }
 
-    protected internal Dictionary<int,string> CharacterSets { get; protected set; }
+    protected internal Dictionary<int, string> CharacterSets { get; protected set; }
 
     public bool SupportsOutputParameters => Version.isAtLeast(5, 5, 0);
 
@@ -114,6 +114,8 @@ namespace MySql.Data.MySqlClient
     public bool SupportsConnectAttrs => (handler.Flags & ClientFlags.CONNECT_ATTRS) != 0;
 
     public bool SupportsPasswordExpiration => (handler.Flags & ClientFlags.CAN_HANDLE_EXPIRED_PASSWORD) != 0;
+
+    public bool SupportsQueryAttributes => (handler.Flags & ClientFlags.CLIENT_QUERY_ATTRIBUTES) != 0;
 
     public bool IsPasswordExpired { get; internal set; }
     #endregion
@@ -249,7 +251,8 @@ namespace MySql.Data.MySqlClient
       // now tell the server which character set we will send queries in and which charset we
       // want results in
       MySqlCommand charSetCmd = new MySqlCommand("SET character_set_results=NULL",
-        connection) {InternallyCreated = true};
+        connection)
+      { InternallyCreated = true };
 
       string clientCharSet;
       serverProps.TryGetValue("character_set_client", out clientCharSet);
@@ -275,21 +278,21 @@ namespace MySql.Data.MySqlClient
     /// </summary>
     /// <param name="connection"></param>
     /// <returns></returns>
-    private Dictionary<string,string> LoadServerProperties(MySqlConnection connection)
+    private Dictionary<string, string> LoadServerProperties(MySqlConnection connection)
     {
       // load server properties
       Dictionary<string, string> hash = new Dictionary<string, string>();
       MySqlCommand cmd = new MySqlCommand(@"SELECT @@max_allowed_packet, @@character_set_client, 
-        @@character_set_connection, @@license, @@sql_mode, @@lower_case_table_names;", connection);
+        @@character_set_connection, @@license, @@sql_mode, @@lower_case_table_names, @@autocommit;", connection);
       try
       {
         using (MySqlDataReader reader = cmd.ExecuteReader())
         {
           while (reader.Read())
           {
-            for (int i = 0; i <= reader.FieldCount-1; i++)
+            for (int i = 0; i <= reader.FieldCount - 1; i++)
             {
-              string key = reader.GetName(i).Remove(0,2);
+              string key = reader.GetName(i).Remove(0, 2);
               string value = reader[i].ToString();
               hash[key] = value;
             }
@@ -306,7 +309,7 @@ namespace MySql.Data.MySqlClient
       }
     }
 
-    private int GetTimeZoneOffset(MySqlConnection con )
+    private int GetTimeZoneOffset(MySqlConnection con)
     {
       MySqlCommand cmd = new MySqlCommand("SELECT TIMEDIFF(NOW(), UTC_TIMESTAMP())", con);
       TimeSpan? timeZoneDiff = cmd.ExecuteScalar() as TimeSpan?;
@@ -323,6 +326,7 @@ namespace MySql.Data.MySqlClient
     /// </summary>
     private void LoadCharacterSets(MySqlConnection connection)
     {
+      serverProps.TryGetValue("autocommit", out var serverAutocommit);
       MySqlCommand cmd = new MySqlCommand("SHOW COLLATION", connection);
 
       // now we load all the currently active collations
@@ -337,6 +341,12 @@ namespace MySql.Data.MySqlClient
               reader.GetString(reader.GetOrdinal("charset"));
           }
         }
+
+        if (Convert.ToInt32(serverAutocommit) == 0 && Version.isAtLeast(8, 0, 0))
+        {
+          cmd = new MySqlCommand("commit", connection);
+          cmd.ExecuteNonQuery();
+        }
       }
       catch (Exception ex)
       {
@@ -349,7 +359,7 @@ namespace MySql.Data.MySqlClient
     {
       List<MySqlError> warnings = new List<MySqlError>();
 
-      MySqlCommand cmd = new MySqlCommand("SHOW WARNINGS", connection) {InternallyCreated = true};
+      MySqlCommand cmd = new MySqlCommand("SHOW WARNINGS", connection) { InternallyCreated = true };
       using (MySqlDataReader reader = cmd.ExecuteReader())
       {
         while (reader.Read())
@@ -365,9 +375,9 @@ namespace MySql.Data.MySqlClient
       return warnings;
     }
 
-    public virtual void SendQuery(MySqlPacket p)
+    public virtual void SendQuery(MySqlPacket p, int paramsPosition)
     {
-      handler.SendQuery(p);
+      handler.SendQuery(p, paramsPosition);
       firstResult = true;
     }
 
@@ -407,7 +417,7 @@ namespace MySql.Data.MySqlClient
     {
       MySqlPacket p = new MySqlPacket(Encoding);
       p.WriteString(sql);
-      SendQuery(p);
+      SendQuery(p, 0);
       NextResult(0, false);
     }
 
@@ -473,7 +483,7 @@ namespace MySql.Data.MySqlClient
         ReportWarnings(connection);
     }
 
-#region IDisposable Members
+    #region IDisposable Members
 
     protected virtual void Dispose(bool disposing)
     {
@@ -514,7 +524,7 @@ namespace MySql.Data.MySqlClient
       GC.SuppressFinalize(this);
     }
 
-#endregion
+    #endregion
   }
 
   internal interface IDriver
@@ -525,7 +535,7 @@ namespace MySql.Data.MySqlClient
     ClientFlags Flags { get; }
     void Configure();
     void Open();
-    void SendQuery(MySqlPacket packet);
+    void SendQuery(MySqlPacket packet, int paramsPosition = 0);
     void Close(bool isOpen);
     bool Ping();
     int GetResult(ref int affectedRows, ref long insertedId);

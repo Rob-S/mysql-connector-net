@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2020, Oracle and/or its affiliates.
+﻿// Copyright (c) 2021, Oracle and/or its affiliates.
 //
 // This program is free software; you can redistribute it and/or modify
 // it under the terms of the GNU General Public License, version 2.0, as
@@ -39,6 +39,8 @@ namespace MySql.Data.Authentication.GSSAPI.Utility
   /// </summary>
   internal class KerberosConfig
   {
+    private const string KRBCONFIG_LINUX = @"/etc/krb5.conf";
+
     private const char COMMENT_HASH = '#';
     private const char COMMENT_SEMI = ';';
     private const char SECTION_OPEN = '[';
@@ -54,22 +56,16 @@ namespace MySql.Data.Authentication.GSSAPI.Utility
     private const string SERVICE_NAME = "ldap/";
     private static string Domain;
 
-    internal static string GetServicePrincipalName(string username)
+    private static void ReadConfig()
     {
-      Domain = SplitUserNameDomain(username);
-
       StringReader reader;
 
       // Tries to get Kerberos configuration file path from environment variables, otherwise
       // set the default path.
-      bool IsWin = Environment.OSVersion.Platform.ToString().StartsWith("Win");
       string krbConfigPath = Environment.GetEnvironmentVariable("KRB5_CONFIG");
 
       if (string.IsNullOrEmpty(krbConfigPath))
-        if (IsWin)
-          krbConfigPath = @"C:\ProgramData\MIT\Kerberos5\krb5.ini";
-        else
-          krbConfigPath = @"/etc/krb5.conf";
+        krbConfigPath = KRBCONFIG_LINUX;
 
       if (File.Exists(krbConfigPath))
       {
@@ -87,6 +83,12 @@ namespace MySql.Data.Authentication.GSSAPI.Utility
         while (IsSectionLine(currentLine))
           currentLine = ReadSection(currentLine, reader);
       }
+    }
+
+    internal static string GetServicePrincipalName(string username)
+    {
+      Domain = SplitUserNameDomain(username);
+      ReadConfig();
 
       string kdc;
 
@@ -116,6 +118,7 @@ namespace MySql.Data.Authentication.GSSAPI.Utility
       return domain;
     }
 
+    #region ReadConfigFile
     private static bool TryReadLine(StringReader reader, out string currentLine)
     {
       currentLine = reader.ReadLine();
@@ -220,5 +223,6 @@ namespace MySql.Data.Authentication.GSSAPI.Utility
           ReadValue(currentLine, reader, section);
       }
     }
+    #endregion
   }
 }

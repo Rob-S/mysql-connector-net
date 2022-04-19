@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2016, 2020 Oracle and/or its affiliates.
+﻿// Copyright (c) 2016, 2021, Oracle and/or its affiliates.
 //
 // This program is free software; you can redistribute it and/or modify
 // it under the terms of the GNU General Public License, version 2.0, as
@@ -26,11 +26,13 @@
 // along with this program; if not, write to the Free Software Foundation, Inc.,
 // 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 
-using MySql.Data.MySqlClient.Authentication;
-using System;
-using System.Data;
-using NUnit.Framework;
 using MySql.Data.Common;
+using MySql.Data.MySqlClient.Authentication;
+using NUnit.Framework;
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Reflection;
 using System.Text;
 
 namespace MySql.Data.MySqlClient.Tests
@@ -877,7 +879,7 @@ namespace MySql.Data.MySqlClient.Tests
     [Property("Category", "Security")]
     public void CheckAllowPublicKeyRetrievalOptionIsAvailable()
     {
-      string connectionString = ConnectionSettings.ConnectionString;
+      string connectionString = Settings.ConnectionString;
       connectionString += ";allowpublickeyretrieval=true";
       using (MySqlConnection connection = new MySqlConnection(connectionString))
       {
@@ -893,7 +895,7 @@ namespace MySql.Data.MySqlClient.Tests
     [Test]
     [Ignore("This test require start the mysql server commercial with the configuration specified in file Resources/my.ini")]
     [Property("Category", "Security")]
-    public void ConnectUsingClearTextPlugin()
+    public void ConnectUsingClearPasswordPlugin()
     {
       //Verify plugin is loaded
       MySqlDataReader pluginReader = ExecuteReader("SELECT * FROM INFORMATION_SCHEMA.PLUGINS WHERE PLUGIN_NAME = 'authentication_ldap_simple'");
@@ -1075,8 +1077,8 @@ namespace MySql.Data.MySqlClient.Tests
         Database = string.Empty
       };
 
-      CreateUser(userName, password, plugin, "%");
-      CreateUser(proxyUser, "", null, "%");
+      ExecuteSQL($"CREATE USER '{userName}'@'%' IDENTIFIED WITH '{plugin}' BY '{password}'", true);
+      ExecuteSQL($"CREATE USER '{proxyUser}'@'%' IDENTIFIED BY ''", true);
       ExecuteSQL($@"GRANT ALL ON *.* TO '{proxyUser}';
         GRANT PROXY on '{proxyUser}' TO '{userName}';", true);
 
@@ -1109,7 +1111,7 @@ namespace MySql.Data.MySqlClient.Tests
       string fixedNonce = "fyko+d2lbbFgONRv9qkxdawL";
       byte[] response;
 
-      ScramSha1Mechanism scramSha1 = new ScramSha1Mechanism("user", "pencil", "localhost");
+      ScramSha1Mechanism scramSha1 = new ScramSha1Mechanism("user", "pencil", Host);
       scramSha1._cnonce = fixedNonce;
       Assert.AreEqual(ScramBase.AuthState.INITIAL, scramSha1._state);
 
@@ -1135,7 +1137,7 @@ namespace MySql.Data.MySqlClient.Tests
       string fixedNonce = "rOprNGfwEbeRWgbNEkqO";
       byte[] response;
 
-      ScramSha256Mechanism scramSha256 = new ScramSha256Mechanism("user", "pencil", "localhost");
+      ScramSha256Mechanism scramSha256 = new ScramSha256Mechanism("user", "pencil", Host);
       scramSha256._cnonce = fixedNonce;
       Assert.AreEqual(ScramBase.AuthState.INITIAL, scramSha256._state);
 
@@ -1175,6 +1177,8 @@ namespace MySql.Data.MySqlClient.Tests
         SslMode = MySqlSslMode.None
       };
 
+      ExecuteSQL("CREATE USER 'test1@MYSQL.LOCAL' IDENTIFIED WITH authentication_ldap_sasl; GRANT ALL ON *.* to 'test1@MYSQL.LOCAL';", true);
+
       using (MySqlConnection connection = new MySqlConnection(settings.ConnectionString))
       {
         if (shouldPass)
@@ -1192,7 +1196,7 @@ namespace MySql.Data.MySqlClient.Tests
           Assert.Throws<MySqlException>(() => connection.Open());
       }
     }
-    #endregion
+    #endregion    
 
     [Test]
     public void AssertSaslPrep()
@@ -1269,5 +1273,595 @@ namespace MySql.Data.MySqlClient.Tests
       Assert.Throws<ArgumentException>(() => MySqlSASLPlugin.SaslPrep("my,0TEXT\uDB40\uDC01"));
     }
     #endregion
+
+    #region PureKerberos Mechanism
+    /// <summary>
+    /// WL14229 - [Classic] Support for authentication_kerberos_client authentication plugin
+    /// WL14654 - [Classic] Integrate new SSPI kerberos library
+    /// This test require to start MySQL Commercial Server with the configuration specified in file Resources/my.ini
+    /// It uses preconfigured LDAP servers present in the labs.
+    /// For configuration of the server, there's a quick guide in Resources/KerberosConfig.txt to setup the environment.    
+    /// </summary>
+    [TestCase("test2", "Testpw1", "", true)] // Same for both OS's
+    [TestCase("test1", "wrongPassword", "", true)] // [Linux] TRUE: if there's a TGT in cache.
+                                                   // [Windows] FALSE: correct password needs to be provided.
+    [TestCase("test1", "Testpw1", "authentication_kerberos_client", true)] // Same for both OS's
+    [TestCase("test1", "Testpw1", "sha256_password", true)] // Same for both OS's
+    [TestCase("invalidUser", "Testpw1", "", false)] // Same for both OS's    
+    [TestCase("test1", "", "", true)] // [Windows] TRUE: If MySQL account name is the same as the logged-in user.
+    [TestCase("invalidUser", "", "", false)] // [Windows] FALSE: If MySQL account name is not the same as the logged-in user.
+    [TestCase("", "Testpw1", "authentication_kerberos_client", true)] // [Windows] TRUE: Windows uses the logged-in user to obtain authentication.
+    [TestCase("", "falsePassword", "authentication_kerberos_client", false)] // [Windows] FALSE: Windows uses the logged-in user to obtain authentication.
+    [TestCase("", "", "caching_sha2_password", false)] // Same for both OS's
+    [TestCase("", "", "authentication_kerberos_client", true)] // [Linux] TRUE: if there's a TGT in cache or the login user is in KDC.
+                                                               // [Windows] TRUE: If Windows client is a part of Windows server domain.
+    [Ignore("This test require to start MySQL Commercial Server with the configuration specified in file Resources/my.ini")]
+    [Property("Category", "Security")]
+    public void ConnectUsingMySqlPluginKerberos(string userName, string password, string pluginName, bool shouldPass)
+    {
+      MySqlConnectionStringBuilder settings = new MySqlConnectionStringBuilder(Settings.ConnectionString)
+      {
+        UserID = userName,
+        Password = password,
+        Database = string.Empty,
+        SslMode = MySqlSslMode.None,
+        DefaultAuthenticationPlugin = pluginName
+      };
+
+      using (MySqlConnection connection = new MySqlConnection(settings.ConnectionString))
+      {
+        if (shouldPass)
+        {
+          connection.Open();
+          MySqlCommand command = new MySqlCommand($"SELECT user();", connection);
+          using (MySqlDataReader reader = command.ExecuteReader())
+          {
+            Assert.True(reader.Read());
+            StringAssert.Contains(userName, reader.GetString(0));
+          }
+        }
+        else
+          Assert.Throws<MySqlException>(() => connection.Open());
+      }
+    }
+    #endregion
+
+    #region OCI IAM Authentication
+    /// <summary>
+    /// WL14708 - Support OCI IAM authentication
+    /// This test require to have a server running in the OCI and have at least one user configured with 
+    /// the authentication_oci authentication plugin (see server WL11102 for further details)
+    /// </summary>
+    [TestCase("cnetuser1", "", Description = "By not setting a custom path, it takes the default value from the OCI SDK for .NET")]
+    [TestCase("cnetuser1", "C:\\config", Description = "Uses a custom path for the config file")]
+    [TestCase("", "", Description = "Uses OS logged in user")]
+    [TestCase("", "C:\\config", Description = "Uses OS logged in user and custom path for the config file")]
+    [Ignore("This test require a server running in the OCI.")]
+    public void ConnectUsingOciIamAuthentication(string userName, string configFilePath)
+    {
+      string host = "100.101.74.201";
+      uint port = 3307;
+
+      var connStringBuilder = new MySqlConnectionStringBuilder()
+      {
+        UserID = userName,
+        Server = host,
+        Port = port,
+        OciConfigFile = configFilePath
+      };
+
+      using (var conn = new MySqlConnection(connStringBuilder.ConnectionString))
+      {
+        conn.Open();
+        MySqlCommand command = new MySqlCommand($"SELECT user();", conn);
+        using (MySqlDataReader reader = command.ExecuteReader())
+        {
+          Assert.True(reader.Read());
+          userName = string.IsNullOrEmpty(userName) ? Environment.UserName : userName;
+          StringAssert.Contains(userName, reader.GetString(0));
+        }
+      }
+    }
+
+    [Test]
+    public void NonExistingKeyFile()
+    {
+      OciAuthenticationPlugin plugin = new OciAuthenticationPlugin();
+      string keyFileInvalidPath = "C:\\invalid\\Path";
+      string exMsg = Assert.Throws<MySqlException>(() => plugin.SignData(new byte[0], keyFileInvalidPath, "")).Message;
+      StringAssert.AreEqualIgnoringCase(Resources.OciKeyFileDoesNotExists, exMsg);
+    }
+
+    public struct Profiles
+    {
+      public Dictionary<string, Dictionary<string, string>> profiles { get; set; }
+      public bool missingEntry { get; set; }
+    }
+
+    [DatapointSource]
+    public Profiles[] profiles = new Profiles[]
+    {
+      // does not contain key_file entry
+      new Profiles{
+        profiles = new Dictionary<string, Dictionary<string, string>>() {
+          { "DEFAULT", new Dictionary<string, string>(){ { "fingerprint", "11:22:33:44:55:66:77" } } },
+          { "TEST", new Dictionary<string, string>(){ { "key_file", "keyFilePath" } } }
+        },
+        missingEntry = true
+      },
+            // does not contain fingerprint entry
+      new Profiles{
+        profiles = new Dictionary<string, Dictionary<string, string>>() {
+          { "DEFAULT", new Dictionary<string, string>(){ { "key_file", "keyFilePath" } } },
+          { "TEST", new Dictionary<string, string>(){ { "fingerprint", "11:22:33:44:55:66:77" } } }
+        },
+        missingEntry = true
+      },
+      // points to a invalid private key file
+      new Profiles{
+        profiles = new Dictionary<string, Dictionary<string, string>>() {
+          { "DEFAULT", new Dictionary<string, string>(){ { "key_file", System.IO.Path.Combine(TestContext.CurrentContext.TestDirectory.Substring(0, TestContext.CurrentContext.TestDirectory.LastIndexOf("bin")), "Resources", "my.ini") }, { "fingerprint", "11:22:33:44:55:66:77" } } }
+        }
+      }
+    };
+
+    [Theory]
+    public void ValidatesEntries(Profiles profiles)
+    {
+      OciAuthenticationPlugin plugin = new OciAuthenticationPlugin();
+      string exMsg;
+
+      if (profiles.missingEntry)
+      {
+        exMsg = Assert.Throws<MySqlException>(() => plugin.GetValues(profiles.profiles, out string keyFile, out string fingerprint)).Message;
+        StringAssert.AreEqualIgnoringCase(Resources.OciEntryNotFound, exMsg);
+      }
+      else
+      {
+        plugin.GetValues(profiles.profiles, out string keyFile, out string fingerprint);
+        exMsg = Assert.Throws<MySqlException>(() => plugin.SignData(new byte[0], keyFile, fingerprint)).Message;
+        StringAssert.AreEqualIgnoringCase(Resources.OciInvalidKeyFile, exMsg);
+      }
+    }
+
+    [Test]
+    public void OtherThanDefaultProfile()
+    {
+      Dictionary<string, Dictionary<string, string>> profiles = new();
+      Dictionary<string, string> valuesDefault = new() { { "fingerprint", "11:22:33:44:55:66" } };
+      Dictionary<string, string> valuesTest = new() { { "key_file", "keyFilePath" }, { "fingerprint", "66:55:44:33:22:11" } };
+      profiles.Add("DEFAULT", valuesDefault);
+      profiles.Add("TEST", valuesTest);
+
+      OciAuthenticationPlugin plugin = new OciAuthenticationPlugin();
+      plugin.GetValues(profiles, out string keyFilePath, out string fingerprint);
+
+      StringAssert.AreEqualIgnoringCase("keyFilePath", keyFilePath);
+      StringAssert.AreEqualIgnoringCase("66:55:44:33:22:11", fingerprint);
+    }
+
+    [DatapointSource]
+    public string[] invalidPaths = new string[]
+    {
+      "\\invalid\\Path//Bad",
+      System.IO.Path.Combine(TestContext.CurrentContext.WorkDirectory, "config")
+    };
+
+    [Theory]
+    [Ignore("This test requires the OCI SDK for .NET")]
+    public void NonExistingConfigFile(string invalidPath)
+    {
+      string userName = "cnetuser1";
+      string host = "100.101.74.201";
+      uint port = 3307;
+      string configFilePath = invalidPath;
+
+      var connStringBuilder = new MySqlConnectionStringBuilder()
+      {
+        UserID = userName,
+        Server = host,
+        Port = port,
+        OciConfigFile = configFilePath
+      };
+
+      using (var conn = new MySqlConnection(connStringBuilder.ConnectionString))
+      {
+        string exMsg = Assert.Throws<MySqlException>(() => conn.Open()).Message;
+        StringAssert.AreEqualIgnoringCase(Resources.OciConfigFileNotFound, exMsg);
+      }
+    }
+
+    [Test]
+    public void OciSdkNotInstalled()
+    {
+      OciAuthenticationPlugin plugin = new OciAuthenticationPlugin();
+
+      string exMsg = Assert.Throws<MySqlException>(() => plugin.Authenticate(false)).Message;
+      StringAssert.AreEqualIgnoringCase(Resources.OciSDKNotFound, exMsg);
+    }
+    #endregion
+
+    #region Multi Factor Authentication (MFA)
+    /// <summary>
+    /// WL14653 - Support for MFA (multi factor authentication) authentication
+    /// </summary>
+    [Test]
+    [Ignore("This test requires the plugin module 'auth_test_plugin' loaded. See WL14653 LLD.")]
+    [Property("Category", "Security")]
+    public void ConnectUsing1FAuth()
+    {
+      ExecuteSQL("CREATE USER IF NOT EXISTS user_1f IDENTIFIED WITH cleartext_plugin_server BY 'password1'", true);
+
+      var connStringBuilder = new MySqlConnectionStringBuilder()
+      {
+        UserID = "user_1f",
+        Password = "password1",
+        Password2 = "otherPassword",
+        Password3 = "thirdPassword",
+        Server = Settings.Server,
+        Port = Settings.Port
+      };
+
+      using var conn = new MySqlConnection(connStringBuilder.ConnectionString);
+      conn.Open();
+      Assert.AreEqual(ConnectionState.Open, conn.State);
+    }
+
+    [TestCase("user_2f", "password1", "password2", true)]
+    [TestCase("sadmin", "perola1", "perola", true)] // using authentication_ldap_sasl as 2f auth (requires LDAP setup)
+    [TestCase("user_2f", "wrong", "password2", false)]
+    [TestCase("user_2f", "password1", "wrong", false)]
+    [TestCase("user_2f", "password1", "", false)]
+    [Ignore("This test requires the plugin module 'auth_test_plugin' loaded. See WL14653 LLD.")]
+    [Property("Category", "Security")]
+    public void ConnectUsing2FAuth(string user, string pwd, string pwd2, bool shouldPass)
+    {
+      // Requires LDAP setup
+      //ExecuteSQL("CREATE USER sadmin IDENTIFIED BY 'perola1' AND IDENTIFIED WITH authentication_ldap_sasl;");
+      ExecuteSQL($"CREATE USER IF NOT EXISTS {user} IDENTIFIED WITH cleartext_plugin_server BY 'password1'" +
+        "AND IDENTIFIED WITH cleartext_plugin_server BY 'password2'", true);
+
+      var connStringBuilder = new MySqlConnectionStringBuilder()
+      {
+        UserID = user,
+        Password = pwd,
+        Password2 = pwd2,
+        Server = Settings.Server,
+        Port = Settings.Port
+      };
+
+      using var conn = new MySqlConnection(connStringBuilder.ConnectionString);
+
+      if (!shouldPass)
+        Assert.Throws<MySqlException>(() => conn.Open());
+      else
+      {
+        conn.Open();
+        Assert.AreEqual(ConnectionState.Open, conn.State);
+      }
+    }
+
+    [TestCase("user_3f", "password1", "password2", "password3", true)]
+    [TestCase("user_3f", "wrong", "password2", "password3", false)]
+    [TestCase("user_3f", "password1", "wrong", "password3", false)]
+    [TestCase("user_3f", "password1", "password2", "wrong", false)]
+    [TestCase("user_3f", "password1", "", "password3", false)]
+    [Ignore("This test requires the plugin module 'auth_test_plugin' loaded. See WL14653 LLD.")]
+    [Property("Category", "Security")]
+    public void ConnectUsing3FAuth(string user, string pwd, string pwd2, string pwd3, bool shouldPass)
+    {
+      ExecuteSQL("CREATE USER IF NOT EXISTS user_3f IDENTIFIED WITH cleartext_plugin_server BY 'password1'" +
+        "AND IDENTIFIED WITH cleartext_plugin_server BY 'password2'" +
+        "AND IDENTIFIED WITH cleartext_plugin_server BY 'password3'", true);
+
+      var connStringBuilder = new MySqlConnectionStringBuilder()
+      {
+        UserID = user,
+        Password = pwd,
+        Password2 = pwd2,
+        Password3 = pwd3,
+        Server = Settings.Server,
+        Port = Settings.Port
+      };
+
+      using var conn = new MySqlConnection(connStringBuilder.ConnectionString);
+
+      if (!shouldPass)
+        Assert.Throws<MySqlException>(() => conn.Open());
+      else
+      {
+        conn.Open();
+        Assert.AreEqual(ConnectionState.Open, conn.State);
+      }
+    }
+    #endregion
+
+    #region WL14389
+
+    [Test, Description("Test User Authentication Fails with classic protocol")]
+    public void AuthPlainAndMySql41()
+    {
+      if (Version <= new Version("5.7")) return;
+      MySqlConnection connection = null;
+      var connectionString = $"server={Settings.Server};user={Settings.UserID};port={Port};password={Settings.Password};auth=PLAIN";
+      Assert.Throws<ArgumentException>(() => connection = new MySqlConnection(connectionString));
+
+      connectionString = $"server={Settings.Server};user={Settings.UserID};port={Port};password={Settings.Password};auth=MySQL41";
+      Assert.Throws<ArgumentException>(() => connection = new MySqlConnection(connectionString));
+    }
+
+    [Test, Description("Test caching_sha2_password feature in the client(auth plugin=sha2_password and native password) in the server(>=8.0.4) " +
+                  "with secure connections(classic connection).Server started with mysql native password plugin")]
+    [Ignore("Fix this")]
+    public void Sha256AndNativeWithCertificates()
+    {
+      if (Version <= new Version("8.0.4")) Assert.Ignore("This test is for MySql 8.0.4 or higher");
+
+      using (var rdr = ExecuteReader("SELECT * FROM INFORMATION_SCHEMA.PLUGINS WHERE PLUGIN_NAME = 'caching_sha2_password'"))
+      {
+        if (!rdr.HasRows) Assert.Ignore("This test needs plugin caching_sha2_password");
+      }
+
+      // Test connection for VALID user in LDAP server with different SSLMode values, expected result pass
+      string assemblyPath = Assembly.GetExecutingAssembly().Location.Replace(String.Format("{0}.dll",
+              Assembly.GetExecutingAssembly().GetName().Name), string.Empty);
+
+      string _sslCa = _sslCa = assemblyPath + "ca.pem";
+      string _sslWrongCert = assemblyPath + "client-incorrect.pfx";
+
+      FileAssert.Exists(_sslCa);
+      FileAssert.Exists(_sslWrongCert);
+
+      string pluginName = "sha256_password";
+      MySqlConnectionStringBuilder builder = new MySqlConnectionStringBuilder();
+      builder.Server = Host;
+      builder.Port = Convert.ToUInt32(Port);
+      builder.UserID = "testCachingSha2";
+      builder.Password = "test";
+      CreateUser(builder.UserID, builder.Password, pluginName);
+
+      // Authentication using RSA keys. Only available in servers compiled with OpenSSL (E.g. Commercial).
+      bool serverCompiledUsingOpenSsl = false;
+      builder.Password = "test";
+      using (MySqlConnection connection = new MySqlConnection(builder.ConnectionString))
+      {
+        connection.Open();
+        MySqlCommand command = new MySqlCommand("SHOW SESSION STATUS LIKE 'Rsa_public_key';", connection);
+
+        using (MySqlDataReader reader = command.ExecuteReader())
+        {
+          if (reader.HasRows)
+          {
+            reader.Read();
+            if (!string.IsNullOrEmpty(reader.GetString(1))) serverCompiledUsingOpenSsl = true;
+          }
+        }
+      }
+
+      // Authentication success with full authentication - TLS connection.
+      using (MySqlConnection connection = new MySqlConnection(builder.ConnectionString))
+      {
+        connection.Open();
+        connection.Close();
+      }
+
+      // Authentication fails with full authentication - TLS connection.SSL Mode default disabled
+      builder.SslMode = MySqlSslMode.None;
+      using (MySqlConnection connection = new MySqlConnection(builder.ConnectionString))
+      {
+        Assert.Throws<MySqlException>(() => connection.Open());
+      }
+
+      string connStr = null;
+      connStr = $"server={Host};port={Port};user={builder.UserID};password={builder.Password};";
+      connStr += $";SSL Mode=Required;CertificateFile={_sslCa};CertificatePassword=pass;";
+      using (MySqlConnection connection = new MySqlConnection(connStr))
+      {
+        connection.Open();
+        connection.Close();
+      }
+
+      connStr = string.Empty;
+      connStr = $"server={Host};port={Port};user={builder.UserID};password={builder.Password};";
+      connStr += $";SSL Mode=VerifyCA;CertificateFile={_sslCa};CertificatePassword=pass;";
+      using (MySqlConnection connection = new MySqlConnection(connStr))
+      {
+        connection.Open();
+        connection.Close();
+      }
+
+      connStr = string.Empty;
+      connStr = $"server={Host};port={Port};user={builder.UserID};password={builder.Password};";
+      connStr += $";SSL Mode=Required;CertificateFile={_sslCa};CertificatePassword=wrongpass;";
+      using (MySqlConnection connection = new MySqlConnection(connStr))
+      {
+        connection.Open();
+        connection.Close();
+      }
+
+      connStr = string.Empty;
+      connStr = $"server={Host};port={Port};user={builder.UserID};password={builder.Password};";
+      connStr += $";SSL Mode=VerifyCA;CertificateFile={_sslCa};CertificatePassword=wrongpass;";
+      using (MySqlConnection connection = new MySqlConnection(connStr))
+      {
+        connection.Open();
+        connection.Close();
+      }
+
+      connStr = string.Empty;
+      connStr = $"server={Host};port={Port};user={builder.UserID};password={builder.Password};";
+      connStr += $";SSL Mode=Required;CertificateFile={_sslWrongCert};CertificatePassword=pass;";
+      using (MySqlConnection connection = new MySqlConnection(connStr))
+      {
+        Assert.Catch(() => connection.Open());
+      }
+
+      // Flush privileges clears the cache.
+      ExecuteSQL("flush privileges");
+      using (MySqlConnection connection = new MySqlConnection(builder.ConnectionString + ";pooling=false"))
+      {
+        Assert.Throws<MySqlException>(() => connection.Open());
+      }
+
+      if (serverCompiledUsingOpenSsl)
+      {
+        builder.SslMode = MySqlSslMode.None;
+        using (MySqlConnection connection = new MySqlConnection(builder.ConnectionString + ";AllowPublicKeyRetrieval=false;pooling=false"))
+        {
+          Assert.Throws<MySqlException>(() => connection.Open());
+        }
+
+        using (MySqlConnection connection = new MySqlConnection(builder.ConnectionString + ";AllowPublicKeyRetrieval=true;pooling=false"))
+        {
+          connection.Open();
+        }
+      }
+
+      // Authentication - TLS connection.
+      builder.UserID = "testCachingSha2";
+      builder.Password = "test";
+      builder.SslMode = MySqlSslMode.Preferred;
+      using (MySqlConnection connection = new MySqlConnection(builder.ConnectionString))
+      {
+        connection.Open();
+        connection.Close();
+      }
+
+      builder.UserID = "testCachingSha2";
+      builder.Password = "test";
+      builder.SslMode = MySqlSslMode.Required;
+      using (MySqlConnection connection = new MySqlConnection(builder.ConnectionString))
+      {
+        connection.Open();
+        connection.Close();
+      }
+
+      // Flush privileges clears the cache.
+      ExecuteSQL("flush privileges");
+      builder.Password = "incorrectPassword";
+      Assert.Throws<MySqlException>(() => new MySqlConnection(builder.ConnectionString).Open());
+
+      // Authentication success with empty password – Any connection.
+      builder = new MySqlConnectionStringBuilder();
+      builder.Server = Host;
+      builder.Port = Convert.ToUInt32(Port);
+      builder.UserID = "testCachingSha2NoPassword";
+      builder.Password = "";
+      CreateUser(builder.UserID, builder.Password, pluginName);
+
+      using (MySqlConnection connection = new MySqlConnection(builder.ConnectionString))
+      {
+        connection.Open();
+        connection.Close();
+      }
+
+      builder.SslMode = MySqlSslMode.None;
+      using (MySqlConnection connection = new MySqlConnection(builder.ConnectionString))
+      {
+        connection.Open();
+        connection.Close();
+      }
+
+      builder.UserID = "testCachingSha2";
+      builder.SslMode = MySqlSslMode.Required;
+      Assert.Throws<MySqlException>(() => new MySqlConnection(builder.ConnectionString).Open());
+
+      builder.SslMode = MySqlSslMode.None;
+      Assert.Throws<MySqlException>(() => new MySqlConnection(builder.ConnectionString).Open());
+
+      pluginName = "mysql_native_password";
+      builder = new MySqlConnectionStringBuilder(RootSettings.ConnectionString);
+      builder.UserID = "testNative";
+      builder.Password = "test";
+      CreateUser(builder.UserID, builder.Password, pluginName);
+
+      // TLS enabled.
+      using (MySqlConnection connection = new MySqlConnection(builder.ConnectionString))
+      {
+        connection.Open();
+        connection.Close();
+      }
+
+
+      builder.SslMode = MySqlSslMode.None;
+      using (MySqlConnection connection = new MySqlConnection(builder.ConnectionString))
+      {
+        connection.Open();
+        connection.Close();
+      }
+
+      builder.SslMode = MySqlSslMode.Required;
+      using (MySqlConnection connection = new MySqlConnection(builder.ConnectionString))
+      {
+        connection.Open();
+        connection.Close();
+      }
+
+      ExecuteSQL("flush privileges");
+      builder.SslMode = MySqlSslMode.None;
+      using (MySqlConnection connection = new MySqlConnection(builder.ConnectionString))
+      {
+        connection.Open();
+        connection.Close();
+      }
+
+      connStr = string.Empty;
+      connStr = $"server={Host};port={Port};user={builder.UserID};password={builder.Password};";
+      connStr += $";SSL Mode=Required;CertificateFile={_sslCa};CertificatePassword=pass;";
+      using (MySqlConnection connection = new MySqlConnection(connStr))
+      {
+        connection.Open();
+        connection.Close();
+      }
+
+      pluginName = "mysql_native_password";
+      builder = new MySqlConnectionStringBuilder();
+      builder.Server = Host;
+      builder.Port = Convert.ToUInt32(Port);
+      builder.UserID = "testNativeBlankPassword";
+      builder.Password = "";
+      CreateUser(builder.UserID, builder.Password, pluginName);
+
+      // TLS enabled.
+      using (MySqlConnection connection = new MySqlConnection(builder.ConnectionString))
+      {
+        connection.Open();
+        connection.Close();
+      }
+
+      // TLS not enabled.
+      builder.SslMode = MySqlSslMode.None;
+      using (MySqlConnection connection = new MySqlConnection(builder.ConnectionString))
+      {
+        connection.Open();
+        connection.Close();
+      }
+
+      builder.SslMode = MySqlSslMode.Required;
+      using (MySqlConnection connection = new MySqlConnection(builder.ConnectionString))
+      {
+        connection.Open();
+        connection.Close();
+      }
+
+      ExecuteSQL("flush privileges");
+      builder.SslMode = MySqlSslMode.None;
+      using (MySqlConnection connection = new MySqlConnection(builder.ConnectionString))
+      {
+        connection.Open();
+        connection.Close();
+      }
+
+      connStr = string.Empty;
+      connStr = $"server={Host};port={Port};user={builder.UserID};password={builder.Password};";
+      connStr += $";SSL Mode=Required;CertificateFile={_sslCa};CertificatePassword=pass;";
+      using (MySqlConnection connection = new MySqlConnection(connStr))
+      {
+        connection.Open();
+        connection.Close();
+      }
+    }
+
+    #endregion WL14389
   }
 }

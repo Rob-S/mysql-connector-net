@@ -1,4 +1,4 @@
-// Copyright (c) 2013, 2020 Oracle and/or its affiliates.
+// Copyright (c) 2013, 2021, Oracle and/or its affiliates.
 //
 // This program is free software; you can redistribute it and/or modify
 // it under the terms of the GNU General Public License, version 2.0, as
@@ -26,10 +26,11 @@
 // along with this program; if not, write to the Free Software Foundation, Inc.,
 // 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 
+using MySql.Data.Common;
+using NUnit.Framework;
 using System;
 using System.Data;
 using System.Text;
-using NUnit.Framework;
 
 namespace MySql.Data.MySqlClient.Tests
 {
@@ -70,13 +71,13 @@ namespace MySql.Data.MySqlClient.Tests
     }
 
     /// <summary>
-    /// Bug #14592 Wrong column length returned for VARCHAR UTF8 columns 
+    /// Bug #14592 Wrong column length returned for VARCHAR UTF8 columns
     /// </summary>
     [Test]
     public void GetSchemaOnUTF8()
     {
-#if NETCOREAPP3_1 || NET5_0
-      if (!System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Windows)) Assert.Ignore();
+#if NETCOREAPP3_1 || NET5_0 || NET6_0
+      if (!Platform.IsWindows()) Assert.Ignore();
 #endif
       ExecuteSQL("CREATE TABLE Test(name VARCHAR(40) NOT NULL, name2 VARCHAR(20)) " +
         "CHARACTER SET utf8");
@@ -202,11 +203,9 @@ namespace MySql.Data.MySqlClient.Tests
       }
     }
 
-
-
     /// <summary>
-    /// Bug #31185  	columns names are incorrect when using the 'AS' clause and name with accents
-    /// Bug #38721  	GetOrdinal doesn't accept column names accepted by MySQL 5.0
+    /// Bug #31185 columns names are incorrect when using the 'AS' clause and name with accents
+    /// Bug #38721 GetOrdinal doesn't accept column names accepted by MySQL 5.0
     /// </summary>
     [Test]
     public void UTF8AsColumnNames()
@@ -352,7 +351,6 @@ namespace MySql.Data.MySqlClient.Tests
       }
     }
 
-#if !NETCOREAPP3_1
     [Test]
     public void Chinese()
     {
@@ -383,10 +381,9 @@ namespace MySql.Data.MySqlClient.Tests
         Assert.AreEqual("щьеи", reader.GetString(1));
       }
     }
-#endif
 
     /// <summary>
-    /// Bug #25651 SELECT does not work properly when WHERE contains UTF-8 characters 
+    /// Bug #25651 SELECT does not work properly when WHERE contains UTF-8 characters
     /// </summary>
     [Test]
     public void UTF8Parameters()
@@ -405,7 +402,6 @@ namespace MySql.Data.MySqlClient.Tests
       Assert.AreEqual(1, o);
     }
 
-#if !NETCOREAPP3_1
     [Test]
     public void Turkish()
     {
@@ -421,6 +417,5 @@ namespace MySql.Data.MySqlClient.Tests
         Assert.AreEqual("ĞËÇÄŞ", reader.GetString(1));
       }
     }
-#endif
   }
 }

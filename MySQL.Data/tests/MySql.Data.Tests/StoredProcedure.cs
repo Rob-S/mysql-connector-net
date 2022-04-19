@@ -26,12 +26,12 @@
 // along with this program; if not, write to the Free Software Foundation, Inc.,
 // 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 
-using System;
 using NUnit.Framework;
+using System;
 using System.Data;
+using System.Data.Common;
 using System.Globalization;
 using System.Threading;
-using System.Data.Common;
 
 namespace MySql.Data.MySqlClient.Tests
 {
@@ -42,13 +42,14 @@ namespace MySql.Data.MySqlClient.Tests
       ExecuteSQL("DROP PROCEDURE IF EXISTS spTest");
       ExecuteSQL(String.Format("DROP TABLE IF EXISTS `{0}`.Test", Connection.Database));
       ExecuteSQL("DROP DATABASE IF EXISTS `dotnet3.1`");
+      Connection.ProcedureCache.Clear();
     }
 
-    [SetUp]
-    public void SetUp()
-    {
-      Connection = GetConnection(false);
-    }
+    //[SetUp]
+    //public void SetUp()
+    //{
+    //  Connection = GetConnection(false);
+    //}
 
     /// <summary>
     /// Bug #7623  	Adding MySqlParameter causes error if MySqlDbType is Decimal
@@ -839,10 +840,10 @@ namespace MySql.Data.MySqlClient.Tests
       //Database and stored procedure contains "."
       ExecuteSQL("CREATE DATABASE IF NOT EXISTS `dotnet3.1`;", true);
       ExecuteSQL("CREATE PROCEDURE `dotnet3.1`.`sp_normalname.1`(p int) BEGIN SELECT p; END", true);
-      using (MySqlConnection rootConnection = new MySqlConnection($"server=localhost;port={Connection.Settings.Port};user id=root;password=;persistsecurityinfo=True;allowuservariables=True;database=dotnet3.1;"))
+      using (MySqlConnection rootConnection = new MySqlConnection($"server={Host};port={Port};user id={RootUser};password={RootPassword};persistsecurityinfo=True;allowuservariables=True;database=dotnet3.1;"))
       {
         rootConnection.Open();
-        using (MySqlCommand cmd = new MySqlCommand("sp_normalname.1", rootConnection))
+        using (MySqlCommand cmd = new MySqlCommand("`sp_normalname.1`", rootConnection))
         {
           cmd.Parameters.AddWithValue("?p", 3);
           cmd.CommandType = CommandType.StoredProcedure;
@@ -879,7 +880,7 @@ namespace MySql.Data.MySqlClient.Tests
     {
       ExecuteSQL("CREATE PROCEDURE spTest() BEGIN SELECT 1; END");
 
-      using (MySqlConnection conn = new MySqlConnection($"server=localhost;user=root;password=;port={Connection.Settings.Port};"))
+      using (MySqlConnection conn = new MySqlConnection($"server={Host};user={RootUser};password={RootPassword};port={Port};"))
       {
         conn.Open();
 
@@ -1047,7 +1048,7 @@ namespace MySql.Data.MySqlClient.Tests
     public void PassEnumParameter()
     {
       ExecuteSQL("CREATE PROCEDURE spTest(data ENUM('Pending','InProgress','Cancel'), ID int) BEGIN SELECT 1; END");
-      using (var connection = new MySqlConnection(ConnectionSettings.ConnectionString))
+      using (var connection = new MySqlConnection(Settings.ConnectionString))
       {
         connection.Open();
         MySqlCommand command = new MySqlCommand("spTest", connection);
@@ -1055,6 +1056,83 @@ namespace MySql.Data.MySqlClient.Tests
         command.Parameters.Add(new MySqlParameter("data", TestStatus.InProgress));
         command.Parameters.Add(new MySqlParameter("ID", 1));
         command.ExecuteNonQuery();
+      }
+    }
+
+    #region WL14389
+
+    [Test]
+    public void EventsStatementsHistory()
+    {
+      if (Version < new Version(8, 0, 0)) Assert.Ignore("This test is for MySql 8.0 or higher");
+      bool testResult = false;
+      var spName = "spGetCount";
+      var cmd = new MySqlCommand(" show variables like 'general_log'", Connection);
+      using (var rdr = cmd.ExecuteReader())
+      {
+        while (rdr.Read())
+        {
+          if (rdr.GetString(1) != "ON") Assert.Ignore("general_log is disabled");
+        }
+      }
+
+      ExecuteSQL("CREATE PROCEDURE spGetCount() BEGIN SELECT 5; END");
+      cmd = new MySqlCommand(spName, Connection);
+      cmd.CommandType = CommandType.StoredProcedure;
+      var cmd2 = new MySqlCommand("truncate table performance_schema.events_statements_history", Connection);
+      cmd2.ExecuteNonQuery();
+
+      using (var rdr = cmd.ExecuteReader())
+      {
+        while (rdr.Read())
+        {
+          Assert.AreEqual("5", rdr.GetString(0));
+        }
+      }
+
+      cmd = new MySqlCommand("select SQL_TEXT from performance_schema.events_statements_history where SQL_text is not null;", Connection);
+      using (var rdr = cmd.ExecuteReader())
+      {
+        while (rdr.Read())
+        {
+          if (rdr.GetString(0).ToString().Contains($"CALL `{spName}`()"))
+          {
+            testResult = true;
+          }
+        }
+      }
+      Assert.True(testResult);
+
+      cmd = new MySqlCommand($"SELECT count(*) FROM information_schema.routines WHERE 1=1 AND ROUTINE_SCHEMA='{Settings.Database}' AND ROUTINE_NAME='{spName}';", Connection);
+      var count = cmd.ExecuteScalar();
+      Assert.AreEqual(1, count);
+
+    }
+
+    #endregion WL14389
+
+
+    /// <summary>
+    /// Bug #33097912	- FULLY QUALIFIED PROCEDURE OR FUNCTION NAMES FAIL
+    /// </summary>
+    [Test]
+    public void FullyQualifiedProcedures()
+    {
+      ExecuteSQL("DROP SCHEMA IF EXISTS Test; CREATE SCHEMA Test");
+      ExecuteSQL("CREATE PROCEDURE `Test`.`spTest` () BEGIN SELECT 1; END");
+
+      using (MySqlConnection conn = new MySqlConnection(Connection.ConnectionString))
+      {
+        conn.Open();
+
+        MySqlCommand command = conn.CreateCommand();
+        command.CommandText = $"`Test`.`spTest`";
+        command.CommandType = CommandType.StoredProcedure;
+        Assert.AreEqual(1, command.ExecuteScalar());
+
+        command.CommandText = $"Test.spTest";
+        command.CommandType = CommandType.StoredProcedure;
+        Assert.AreEqual(1, command.ExecuteScalar());
       }
     }
   }

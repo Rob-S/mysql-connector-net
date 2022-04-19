@@ -1,4 +1,4 @@
-// Copyright (c) 2013, 2020 Oracle and/or its affiliates.
+// Copyright (c) 2013, 2021, Oracle and/or its affiliates.
 //
 // This program is free software; you can redistribute it and/or modify
 // it under the terms of the GNU General Public License, version 2.0, as
@@ -26,12 +26,13 @@
 // along with this program; if not, write to the Free Software Foundation, Inc.,
 // 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 
-using System;
 using NUnit.Framework;
+using System;
 using System.Data;
-using System.Threading.Tasks;
 using System.Data.Common;
+using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace MySql.Data.MySqlClient.Tests
 {
@@ -418,7 +419,7 @@ namespace MySql.Data.MySqlClient.Tests
       ExecuteSQL("CREATE TABLE Test (id INT, PRIMARY KEY(id))");
       ExecuteSQL("INSERT INTO Test VALUES(1)");
 
-      using (MySqlConnection c = new MySqlConnection(ConnectionSettings.ConnectionString))
+      using (MySqlConnection c = new MySqlConnection(Settings.ConnectionString))
       {
         MySqlDataAdapter da = new MySqlDataAdapter("SELECT * FROM Test", c);
         MySqlCommandBuilder cb = new MySqlCommandBuilder(da);
@@ -723,7 +724,7 @@ namespace MySql.Data.MySqlClient.Tests
     [Test]
     public void FunctionsReturnString()
     {
-      string connStr = ConnectionSettings.ConnectionString + ";functions return string=yes";
+      string connStr = Settings.ConnectionString + ";functions return string=yes";
 
       using (MySqlConnection c = new MySqlConnection(connStr))
       {
@@ -749,7 +750,7 @@ namespace MySql.Data.MySqlClient.Tests
         PRIMARY KEY(id)) ENGINE=InnoDB DEFAULT CHARSET=latin1");
       ExecuteSQL("INSERT INTO Test VALUES (1, 'name', 23.2)");
 
-      using (MySqlConnection c = new MySqlConnection(ConnectionSettings.ConnectionString))
+      using (MySqlConnection c = new MySqlConnection(Settings.ConnectionString))
       {
         string sql = "SELECT * FROM Test";
         MySqlDataAdapter da = new MySqlDataAdapter(sql, c);
@@ -819,13 +820,13 @@ namespace MySql.Data.MySqlClient.Tests
     /// <summary>
     /// Bug #38411, using closed connection with data adapter.
     /// </summary>
-#if !(NETCOREAPP3_1 || NET5_0)
+#if !(NETCOREAPP3_1 || NET5_0 || NET6_0)
     [Test]
     public void BatchingConnectionClosed()
     {
       ExecuteSQL("CREATE TABLE Test (id INT, name VARCHAR(20), PRIMARY KEY(id))");
 
-      string connStr = ConnectionSettings.ConnectionString;
+      string connStr = Settings.ConnectionString;
       MySqlConnection c = new MySqlConnection(connStr);
       MySqlConnection c2 = new MySqlConnection(connStr);
       MySqlConnection c3 = new MySqlConnection(connStr);
@@ -964,7 +965,7 @@ namespace MySql.Data.MySqlClient.Tests
     {
       ExecuteSQL("CREATE PROCEDURE SimpleSelect() BEGIN SELECT 'ADummyVal' as DummyVal; END");
 
-      MySqlConnectionStringBuilder cb = new MySqlConnectionStringBuilder(ConnectionSettings.ConnectionString);
+      MySqlConnectionStringBuilder cb = new MySqlConnectionStringBuilder(Settings.ConnectionString);
       cb.Pooling = true;
 
       using (MySqlConnection connection = new MySqlConnection(cb.ConnectionString))
@@ -991,7 +992,7 @@ namespace MySql.Data.MySqlClient.Tests
       ExecuteSQL("CREATE PROCEDURE SimpleSelect1() BEGIN SELECT 'ADummyVal' as DummyVal; END");
       ExecuteSQL("CREATE PROCEDURE SimpleSelect2() BEGIN SELECT 'ADummyVal' as DummyVal; END");
 
-      MySqlConnectionStringBuilder cb = new MySqlConnectionStringBuilder(ConnectionSettings.ConnectionString);
+      MySqlConnectionStringBuilder cb = new MySqlConnectionStringBuilder(Settings.ConnectionString);
       cb.Pooling = true;
 
       using (MySqlConnection connection = new MySqlConnection(cb.ConnectionString))
@@ -1016,6 +1017,100 @@ namespace MySql.Data.MySqlClient.Tests
           MySqlConnection.ClearPool(connection);
         }
       }
+    }
+
+    [Test, Description("CommandBuilder Async ")]
+    public async Task CommandBuilderAsync()
+    {
+      ExecuteSQL("CREATE TABLE DAActor (id INT NOT NULL AUTO_INCREMENT, name VARCHAR(100),PRIMARY KEY(id))");
+      ExecuteSQL("INSERT INTO DAActor (name) VALUES ('Name 1')");
+      ExecuteSQL("INSERT INTO DAActor (name) VALUES ('Name 2')");
+      using (var conn = new MySqlConnection(Settings.ConnectionString))
+      {
+        await conn.OpenAsync();
+        var da = new MySqlDataAdapter("SELECT * FROM DAActor", conn);
+        var cb = new MySqlCommandBuilder(da);
+        var dt = new DataTable();
+        dt.Clear();
+        await da.FillAsync(dt); // asynchronous
+
+        dt.Rows[0][1] = "my changed value 1";
+        var changes = dt.GetChanges();
+        var count = da.Update(changes);
+        dt.AcceptChanges();
+        Assert.True(count == 1, "checking update count");
+        await conn.CloseAsync();
+      }
+
+      using (var conn = new MySqlConnection(Settings.ConnectionString))
+      {
+        await conn.OpenAsync();
+        var da = new MySqlDataAdapter("SELECT * FROM DAActor", conn);
+        var cb = new MySqlCommandBuilder(da);
+        var dt = new DataTable();
+        await da.FillAsync(dt);
+        await da.UpdateAsync(dt); // asynchronous
+
+        dt.Rows[0][1] = "my changed value 2";
+        var changes = dt.GetChanges();
+        var count = da.Update(changes);
+        dt.AcceptChanges();
+        Assert.True(count == 1, "checking update count");
+        await conn.CloseAsync();
+      }
+    }
+
+    /// <summary>
+    /// Bug #22913833	- COMMANDS IGNORED AND NO ERROR PRODUCED WHEN PACKET OVER MAX_ALLOWED_PACKET
+    /// When the size of the query exceeded the size of the 'max_allowed_packet', it just ignore the query and jump to the next one. This 
+    /// behavior changed to raise an exception instead to avoid partial batch inserts
+    /// </summary>
+    [Test]
+    public void BatchOverMaxPacketAllowed()
+    {
+      // setting the 'max_allowed_packet' to its minimum so we can reproduce the issue easily
+      ExecuteSQL("SET GLOBAL max_allowed_packet = 1024", true);
+      ExecuteSQL("CREATE TABLE Test (Id INT NOT NULL AUTO_INCREMENT, Col1 VARCHAR(250), Blob1 LONGBLOB, PRIMARY KEY(Id))");
+
+      using (var conn = new MySqlConnection(Connection.ConnectionString))
+      {
+        conn.Open();
+
+        MySqlDataAdapter dataAdapter = new MySqlDataAdapter("SELECT Col1, Blob1 FROM Test", conn);
+        MySqlCommandBuilder mySqlCommandBuilder = new MySqlCommandBuilder(dataAdapter);
+        dataAdapter.InsertCommand = mySqlCommandBuilder.GetInsertCommand();
+        DataTable dataTable = new();
+        dataAdapter.Fill(dataTable);
+
+        StringBuilder stringBuilder = new();
+        Random random = new();
+        // generate random text
+        for (int i = 0; i < 200; i++)
+        {
+          var _char = (char)random.Next(65, 90);
+          stringBuilder.Append(_char);
+        }
+
+        // generate random byte array
+        byte[] buf = new byte[500];
+        random.NextBytes(buf);
+
+        DataRow[] dataRows = new DataRow[2];
+        for (int i = 0; i < 2; i++)
+        {
+          dataRows[i] = dataTable.NewRow();
+          dataRows[i][0] = $"Col1Value_{i}_{stringBuilder.ToString()}";
+          dataRows[i][1] = buf;
+          dataTable.Rows.Add(dataRows[i]);
+        }
+
+        dataAdapter.UpdateBatchSize = 2;
+        var ex = Assert.Throws<MySqlException>(() => dataAdapter.Update(dataRows));
+        StringAssert.AreEqualIgnoringCase(Resources.QueryTooLarge, ex.Message);
+      }
+
+      // setting back to the initial value
+      ExecuteSQL($"SET GLOBAL max_allowed_packet = {MaxPacketSize}", true);
     }
 
     #region Async

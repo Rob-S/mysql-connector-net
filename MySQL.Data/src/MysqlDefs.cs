@@ -40,8 +40,8 @@ namespace MySql.Data.MySqlClient
   [Flags]
   internal enum ClientFlags : ulong
   {
-    LONG_PASSWORD = 1, // new more secure passwords
-    FOUND_ROWS = 2, // found instead of affected rows
+    LONG_PASSWORD = 1, // New more secure passwords
+    FOUND_ROWS = 2, // Found instead of affected rows
     LONG_FLAG = 4, // Get all column flags
     CONNECT_WITH_DB = 8, // One can specify db on connect
     NO_SCHEMA = 16, // Don't allow db.table.column
@@ -54,16 +54,19 @@ namespace MySql.Data.MySqlClient
     SSL = 2048, // Switch to SSL after handshake
     IGNORE_SIGPIPE = 4096, // IGNORE sigpipes
     TRANSACTIONS = 8192, // Client knows about transactions
-    RESERVED = 16384,               // old 4.1 protocol flag
-    SECURE_CONNECTION = 32768,      // new 4.1 authentication
-    MULTI_STATEMENTS = 65536,       // Allow multi-stmt support
-    MULTI_RESULTS = 131072,         // Allow multiple resultsets
-    PS_MULTI_RESULTS = 1UL << 18,    // allow multi results using PS protocol
-    PLUGIN_AUTH = (1UL << 19), //Client supports plugin authentication
-    CONNECT_ATTRS = (1UL << 20),    // Allows client connection attributes
-    CAN_HANDLE_EXPIRED_PASSWORD = (1UL << 22),   // Support for password expiration > 5.6.6
-    CLIENT_SSL_VERIFY_SERVER_CERT = (1UL << 30),
-    CLIENT_REMEMBER_OPTIONS = (1UL << 31)
+    RESERVED = 16384, // Old 4.1 protocol flag
+    SECURE_CONNECTION = 32768, // New 4.1 authentication
+    MULTI_STATEMENTS = 65536, // Allow multi-stmt support
+    MULTI_RESULTS = 131072, // Allow multiple resultsets    
+    PS_MULTI_RESULTS = 1UL << 18, // Allow multi results using PS protocol
+    PLUGIN_AUTH = (1UL << 19), // Client supports plugin authentication
+    CONNECT_ATTRS = (1UL << 20), // Allows client connection attributes
+    CAN_HANDLE_EXPIRED_PASSWORD = (1UL << 22), // Support for password expiration > 5.6.6
+    CLIENT_SESSION_TRACK = (1UL << 23), // Support fo sending session tracker vars
+    CLIENT_QUERY_ATTRIBUTES = (1UL << 27), // Support for query attributes
+    CLIENT_SSL_VERIFY_SERVER_CERT = (1UL << 30), // Verify server certificate
+    CLIENT_REMEMBER_OPTIONS = (1UL << 31), // Don't reset the options after an unsuccessful connect
+    MULTI_FACTOR_AUTHENTICATION = (1UL << 28) // Support for Multi Factor Authentication (MFA)
   }
 
   [Flags]
@@ -77,7 +80,23 @@ namespace MySql.Data.MySqlClient
     NoIndex = 32,
     CursorExists = 64,
     LastRowSent = 128,
-    OutputParameters = 4096
+    DbDropped = 256,
+    NoBackslashEscapes = 512,
+    MetadataChanged = 1024,
+    WasSlow = 2048,
+    OutputParameters = 4096,
+    InTransactionReadOnly = 8192, // In a read-only transaction
+    SessionStateChanged = 16384 // Connection state information has changed
+  }
+
+  internal enum SessionTrackType
+  {
+    SystemVariables = 0,
+    Schema = 1,
+    StateChange = 2,
+    GTIDS = 3,
+    TransactionCharacteristics = 4,
+    TransactionState = 5
   }
 
   /// <summary>
@@ -346,11 +365,11 @@ namespace MySql.Data.MySqlClient
     /// <summary>
     /// TCP/IP style connection. Works everywhere.
     /// </summary>
-    Socket = 1,
+    Socket = Sockets,
     /// <summary>
     /// TCP/IP style connection. Works everywhere.
     /// </summary>
-    Tcp = 1,
+    Tcp = Sockets,
     /// <summary>
     /// Named pipe connection. Works only on Windows systems.
     /// </summary>
@@ -358,7 +377,7 @@ namespace MySql.Data.MySqlClient
     /// <summary>
     /// Named pipe connection. Works only on Windows systems.
     /// </summary>
-    NamedPipe = 2,
+    NamedPipe = Pipe,
     /// <summary>
     /// Unix domain socket connection. Works only with Unix systems.
     /// </summary>
@@ -366,7 +385,7 @@ namespace MySql.Data.MySqlClient
     /// <summary>
     /// Unix domain socket connection. Works only with Unix systems.
     /// </summary>
-    Unix = 3,
+    Unix = UnixSocket,
     /// <summary>
     /// Shared memory connection. Currently works only with Windows systems.
     /// </summary>
@@ -374,7 +393,7 @@ namespace MySql.Data.MySqlClient
     /// <summary>
     /// Shared memory connection. Currently works only with Windows systems.
     /// </summary>
-    Memory = 4
+    Memory = SharedMemory
   }
 
   /// <summary>
@@ -538,14 +557,40 @@ namespace MySql.Data.MySqlClient
     KILLED = 3169
   }
 
-  public enum MySQLGuidFormat
+  /// <summary>
+  ///     Controls which column type should be read as type System.Guid.
+  /// </summary>
+  public enum MySqlGuidFormat
   {
+    /// <summary>
+    ///     Same as Char36 when OldGuids equals False, otherwise, the same as LittleEndianBinary16.
+    /// </summary>
     Default = 0,
+    /// <summary>
+    ///     No column types are read or written as type Guid.
+    /// </summary>
     None = 1,
+    /// <summary>
+    ///     Char(36) columns are read or written as type Guid using lowercase hex with hyphens, which match UUID().
+    /// </summary>
     Char36 = 2,
+    /// <summary>
+    ///     Char(32) columns are read or written as type Guid using lowercase hex without hyphens.
+    /// </summary>
     Char32 = 3,
+    /// <summary>
+    ///     Binary(16) columns are read or written as type Guid using big-endian byte order, which matches UUID_TO_BIN(x).
+    /// </summary>
     Binary16 = 4,
+    /// <summary>
+    ///     Binary(16) columns are read or written as type Guid using big-endian byte order
+    ///     with time parts swapped, which matches UUID_TO_BIN(x,1).
+    /// </summary>
     TimeSwapBinary16 = 5,
+    /// <summary>
+    ///     Binary(16) columns are read or written as type Guid using little-endian byte order,
+    ///     that is, the byte order used by System.Guid.ToByteArray and System.Guid.#ctor(System.Byte[]).
+    /// </summary>
     LittleEndianBinary16 = 6
   }
 

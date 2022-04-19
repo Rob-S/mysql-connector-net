@@ -26,10 +26,11 @@
 // along with this program; if not, write to the Free Software Foundation, Inc.,
 // 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 
-using System;
-using NUnit.Framework;
-using System.Data;
 using MySql.Data.Types;
+using NUnit.Framework;
+using System;
+using System.Data;
+using System.Text;
 
 namespace MySql.Data.MySqlClient.Tests
 {
@@ -38,6 +39,7 @@ namespace MySql.Data.MySqlClient.Tests
     protected override void Cleanup()
     {
       ExecuteSQL(String.Format("DROP TABLE IF EXISTS `{0}`.Test", Connection.Database));
+      ExecuteSQL(String.Format("DROP TABLE IF EXISTS `{0}`.datatypes", Connection.Database));
     }
 
     [Test]
@@ -669,7 +671,6 @@ namespace MySql.Data.MySqlClient.Tests
       Assert.AreEqual("SRID=101;POINT(47.37 -122.21)", mysqlGeometryResult.ToString());
     }
 
-
     [Test]
     public void StoringAndRetrievingGeometry()
     {
@@ -721,7 +722,6 @@ namespace MySql.Data.MySqlClient.Tests
       }
     }
 
-
     [Test]
     public void CanSaveSridValueOnGeometry()
     {
@@ -746,7 +746,6 @@ namespace MySql.Data.MySqlClient.Tests
         Assert.AreEqual("101", val);
       }
     }
-
 
     [Test]
     public void CanFetchGeometryAsText()
@@ -829,7 +828,7 @@ namespace MySql.Data.MySqlClient.Tests
     {
       var bytes = new byte[] { 0x00, 0x00, 0x00, 0x00, 0x01, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
       MySqlGeometry v = new MySqlGeometry(MySqlDbType.Geometry, bytes);
-#if (NETCOREAPP3_1 || NET5_0)
+#if (NETCOREAPP3_1 || NET5_0 || NET6_0)
       Assert.AreEqual("POINT(3.5E-323 0)", v.ToString());
 #else
       Assert.AreEqual("POINT(3.45845952088873E-323 0)", v.ToString());
@@ -867,7 +866,7 @@ namespace MySql.Data.MySqlClient.Tests
         reader.Read();
         var val = reader.GetMySqlGeometry(0);
         var valWithName = reader.GetMySqlGeometry("v");
-#if (NETCOREAPP3_1 || NET5_0)
+#if (NETCOREAPP3_1 || NET5_0 || NET6_0)
         Assert.AreEqual("POINT(3.5E-323 0)", val.ToString());
         Assert.AreEqual("POINT(3.5E-323 0)", valWithName.ToString());
 #else
@@ -1232,26 +1231,99 @@ namespace MySql.Data.MySqlClient.Tests
     [Test]
     public void CanReadJsonValue()
     {
-
-      if (Version < new Version(5, 7)) return;
-
+      if (Version < new Version(5, 7)) Assert.Ignore("This test is for MySql 5.7 or higher"); ;
       ExecuteSQL("CREATE TABLE Test(Id int NOT NULL PRIMARY KEY, jsoncolumn JSON)");
-
       MySqlCommand cmd = new MySqlCommand("INSERT INTO Test VALUES (@id, '[1]')", Connection);
       cmd.Parameters.AddWithValue("@id", 1);
       cmd.ExecuteNonQuery();
-
       string command = @"INSERT INTO Test VALUES (@id, '[""a"", {""b"": [true, false]}, [10, 20]]')";
       cmd = new MySqlCommand(command, Connection);
       cmd.Parameters.AddWithValue("@id", 2);
       cmd.ExecuteNonQuery();
-
       cmd = new MySqlCommand("SELECT jsoncolumn from Test where id = 2 ", Connection);
-
       using (MySqlDataReader reader = cmd.ExecuteReader())
       {
         Assert.True(reader.Read());
         Assert.AreEqual("[\"a\", {\"b\": [true, false]}, [10, 20]]", reader.GetString(0));
+      }
+
+      ExecuteSQL("delete from Test");
+      cmd = new MySqlCommand("INSERT INTO Test VALUES (@id, '[1]')", Connection);
+      cmd.Parameters.AddWithValue("@id", 1);
+      cmd.ExecuteNonQuery();
+
+      cmd = new MySqlCommand(@"INSERT INTO Test VALUES(@id,' { ""name"" : ""Bob"" , ""age"" : 25 } ')", Connection);
+      cmd.Parameters.AddWithValue("@id", 2);
+      cmd.ExecuteNonQuery();
+
+      cmd = new MySqlCommand(@"INSERT INTO Test VALUES(@id,' { ""name"" : ""Test"" , ""age"" : 100000 } ')", Connection);
+      cmd.Parameters.AddWithValue("@id", 3);
+      cmd.ExecuteNonQuery();
+
+      cmd = new MySqlCommand(@"INSERT INTO Test VALUES(@id,' { ""age"" : 200, ""name"" : ""check""  } ')", Connection);
+      cmd.Parameters.AddWithValue("@id", 4);
+      cmd.ExecuteNonQuery();
+
+      cmd = new MySqlCommand(@"INSERT INTO Test VALUES(@id,' { ""age"" : 200,""zage"" : 300,""bage"" : 400, ""name"" : ""check""  } ')", Connection);
+      cmd.Parameters.AddWithValue("@id", 5);
+      cmd.ExecuteNonQuery();
+
+      cmd = new MySqlCommand("SELECT jsoncolumn from Test where id = 2", Connection);
+      using (var reader = cmd.ExecuteReader())
+      {
+        Assert.AreEqual(true, reader.Read(), "Matching the values");
+        var checkValue = "{\"age\": 25, \"name\": \"Bob\"}";
+        Assert.AreEqual(checkValue, reader.GetString(0), "Matching the values");
+      }
+      cmd = new MySqlCommand("SELECT count(*) from Test", Connection);
+      var count = cmd.ExecuteScalar();
+      Assert.AreEqual(5, count);
+
+      cmd = new MySqlCommand(@"INSERT INTO Test VALUES(@id,' { ""name"" : ""harald"",""Date"": ""2013-08-07"",""Time"": ""11:18:29.000000"",""DateTimeOfRegistration"": ""2013-08-07 12:18:29.000000""} ')",
+                            Connection);
+      cmd.Parameters.AddWithValue("@id", 1000);
+      cmd.ExecuteNonQuery();
+
+      cmd = new MySqlCommand("SELECT jsoncolumn from Test where id=1000", Connection);
+      using (var reader = cmd.ExecuteReader())
+      {
+        Assert.AreEqual(true, reader.Read(), "Matching the values");
+        var checkValue =
+            "{\"Date\": \"2013-08-07\", \"Time\": \"11:18:29.000000\", \"name\": \"harald\", \"DateTimeOfRegistration\": \"2013-08-07 12:18:29.000000\"}";
+        Assert.AreEqual(checkValue, reader.GetString(0), "Matching the values");
+      }
+
+      //Multiple Columns
+      ExecuteSQL("DROP TABLE IF EXISTS Test");
+      ExecuteSQL("CREATE TABLE Test (Id int NOT NULL PRIMARY KEY, jsoncolumn1 JSON,jsoncolumn2 JSON,jsoncolumn3 JSON)");
+
+      cmd = new MySqlCommand(@"INSERT INTO Test VALUES(@id,'{ ""name"" : ""bob""}', '{ ""marks"" : 97}','{ ""distinction"" : true}')",
+          Connection);
+      cmd.Parameters.AddWithValue("@id", 100000);
+      cmd.ExecuteNonQuery();
+
+      cmd = new MySqlCommand("SELECT jsoncolumn1 from Test where id=100000", Connection);
+      using (var reader = cmd.ExecuteReader())
+      {
+        Assert.AreEqual(true, reader.Read(), "Matching the values");
+        var checkValue = "{\"name\": \"bob\"}";
+        Assert.AreEqual(checkValue, reader.GetString(0), "Matching the values");
+      }
+
+      cmd = new MySqlCommand("SELECT jsoncolumn2 from Test where id=100000", Connection);
+      using (var reader = cmd.ExecuteReader())
+      {
+        Assert.AreEqual(true, reader.Read(), "Matching the values");
+        var checkValue = "{\"marks\": 97}";
+        Assert.AreEqual(checkValue, reader.GetString(0), "Matching the values");
+      }
+
+      cmd = new MySqlCommand("SELECT jsoncolumn3 from Test where id=100000", Connection);
+      using (var reader = cmd.ExecuteReader())
+      {
+        Assert.AreEqual(true, reader.Read(), "Matching the values");
+        var checkValue = "{\"distinction\": true}";
+        Assert.AreEqual(checkValue, reader.GetString(0), "Matching the values");
       }
     }
 
@@ -1277,6 +1349,25 @@ namespace MySql.Data.MySqlClient.Tests
         Assert.True(reader.Read());
         Assert.AreEqual("[\"a\", {\"b\": [true, false]}, [10, 20]]", reader.GetString(0));
       }
+
+      cmd = new MySqlCommand(@"INSERT INTO Test VALUES(@id,' { ""name"" : ""bob"",""Date"": ""2015-10-09"",""Time"": ""12:18:29.000000"",""DateTimeOfRegistration"": ""2015-10-09 12:18:29.000000""} ')",
+                             Connection);
+      cmd.Parameters.AddWithValue("@id", 100000);
+      cmd.ExecuteNonQuery();
+
+      command = @"UPDATE Test set jsoncolumn = ' { ""name"" : ""harald"",""Date"": ""2013-08-07"",""Time"": ""11:18:29.000000"",""DateTimeOfRegistration"": ""2013-08-07 12:18:29.000000""} ' where id = 100000";
+      cmd = new MySqlCommand(command, Connection);
+      cmd.ExecuteNonQuery();
+
+      cmd = new MySqlCommand("SELECT jsoncolumn from Test where id=100000", Connection);
+      using (var reader = cmd.ExecuteReader())
+      {
+        Assert.AreEqual(true, reader.Read(), "Matching the values");
+        var checkValue =
+            "{\"Date\": \"2013-08-07\", \"Time\": \"11:18:29.000000\", \"name\": \"harald\", \"DateTimeOfRegistration\": \"2013-08-07 12:18:29.000000\"}";
+        Assert.AreEqual(checkValue, reader.GetString(0), "Matching the values");
+      }
+
     }
 
     /// Testing out Generated Columns
@@ -1354,6 +1445,178 @@ namespace MySql.Data.MySqlClient.Tests
       {
         Assert.True(reader.IsDBNull(0));
       }
+    }
+
+    /// <summary>
+    /// Bug #32938630 - CAN'T READ CHAR(36) COLUMN IF MYSQLCOMMAND IS PREPARED
+    /// </summary>
+    [Test]
+    public void ReadChar36ColumnPrepared()
+    {
+      string guid = "3e22b63e-8077-43ab-8cee-17aa1db80861";
+      ExecuteSQL($"CREATE TABLE `Test` (value CHAR(36)); INSERT INTO Test(value) VALUES('{guid}');");
+
+      MySqlCommand cmd = new MySqlCommand("SELECT value FROM Test", Connection);
+      cmd.Prepare();
+      using var reader = cmd.ExecuteReader();
+      while (reader.Read())
+      {
+        StringAssert.AreEqualIgnoringCase(guid, reader.GetGuid(0).ToString());
+      }
+    }
+
+    /// <summary>
+    /// Bug 26876582 UNEXPECTED COLUMNSIZE FOR CHAR(36) AND BLOB COLUMNS IN GETSCHEMATABLE
+    /// </summary>
+    [Test]
+    public void UnexpectedColumnSize()
+    {
+      var cmd = new MySqlCommand("create table datatypes(char36 char(36),char37 char(37),`tinyblob` tinyblob,`blob` blob); ", Connection);
+      cmd.ExecuteNonQuery();
+
+      cmd = new MySqlCommand("insert into datatypes values('test', 'test', _binary'test',_binary'test'); ", Connection);
+      cmd.ExecuteNonQuery();
+
+      using (cmd = Connection.CreateCommand())
+      {
+        cmd.CommandText = "SELECT * FROM datatypes;";
+        using (var reader = cmd.ExecuteReader())
+        {
+          var schemaTable = reader.GetSchemaTable();
+          Assert.AreEqual("36", schemaTable.Rows[0]["ColumnSize"].ToString(), "Matching the Column Size");
+          Assert.AreEqual("37", schemaTable.Rows[1]["ColumnSize"].ToString(), "Matching the Column Size");
+          Assert.AreEqual("255", schemaTable.Rows[2]["ColumnSize"].ToString(), "Matching the Column Size");
+          Assert.AreEqual("65535", schemaTable.Rows[3]["ColumnSize"].ToString(), "Matching the Column Size");
+        }
+      }
+    }
+
+    [Test, Description("Test Can Read long JSON Values")]
+    public void ReadJSONLongValues()
+    {
+      if (Version < new Version(5, 7)) Assert.Ignore("This test is for MySql 5.7 or higher.");
+      var sb = new StringBuilder("0");
+      for (int x = 1; x <= 575; x++)
+      {
+        sb.Append($"TestingaLongString{x}");
+      }
+
+      ExecuteSQL("CREATE TABLE Test (Id int NOT NULL PRIMARY KEY, jsoncolumn JSON)");
+
+      string jsonTest = null;
+      var i = 1000000000;
+      jsonTest = @"{ ""age"" : " + i + "}";
+      var cmd = new MySqlCommand("INSERT INTO Test VALUES (@id, @jsoncolumn)", Connection);
+      cmd.Parameters.AddWithValue("@id", i);
+      cmd.Parameters.AddWithValue("@jsoncolumn", jsonTest);
+      cmd.ExecuteNonQuery();
+      cmd = new MySqlCommand("SELECT jsoncolumn from Test where id = " + i, Connection);
+      using (var reader = cmd.ExecuteReader())
+      {
+        Assert.AreEqual(true, reader.Read(), "Matching the values");
+        var checkValue = @"{""age"": " + i + "}";
+        Assert.AreEqual(checkValue, reader.GetString(0), "Matching the values");
+      }
+
+      // long string
+      cmd = new MySqlCommand(
+        @"INSERT INTO Test VALUES(@id,'{""name"":""" + sb.ToString() + @"""}')",
+        Connection);
+      cmd.Parameters.AddWithValue("@id", 2);
+      cmd.ExecuteNonQuery();
+
+      cmd = new MySqlCommand("SELECT jsoncolumn from Test where id = 2", Connection);
+      using (var reader = cmd.ExecuteReader())
+      {
+        Assert.AreEqual(true, reader.Read(), "Matching the values");
+        var checkValue =
+            @"{""name"": """ + sb.ToString() + @"""}";
+        Assert.AreEqual(checkValue, reader.GetString(0), "Matching the values");
+      }
+    }
+
+    [Test, Description("Test Can Read JSON Value Stress")]
+    public void ReadJSONValueStress()
+    {
+      if (Version < new Version(5, 7)) Assert.Ignore("This test is for MySql 5.7 or higher.");
+      ExecuteSQL("CREATE TABLE Test (Id int NOT NULL PRIMARY KEY, jsoncolumn JSON)");
+      string jsonTest = null;
+      for (var i = 0; i < 1000; i++)
+      {
+        jsonTest = @"{ ""age"" : " + i + "}";
+        var cmd = new MySqlCommand("INSERT INTO Test VALUES (@id, @jsoncolumn)", Connection);
+        cmd.Parameters.AddWithValue("@id", i);
+        cmd.Parameters.AddWithValue("@jsoncolumn", jsonTest);
+        cmd.ExecuteNonQuery();
+
+        cmd = new MySqlCommand("SELECT jsoncolumn from Test where id = " + i, Connection);
+
+        using (var reader = cmd.ExecuteReader())
+        {
+          Assert.AreEqual(true, reader.Read(), "Matching the values");
+          var checkValue = @"{""age"": " + i + "}";
+          Assert.AreEqual(checkValue, reader.GetString(0), "Matching the values");
+        }
+      }
+    }
+
+    /// <summary>
+    /// Bug #33470147 - Bug #91752 is marked as fixed in v8.0.16, but still present in v8.0.26
+    /// When reading a zero time value, it didn't reset the value of the new row hence the exception
+    /// </summary>
+    [Test]
+    public void ZeroTimeValues()
+    {
+      ExecuteSQL(@"CREATE TABLE Test (tm TIME NOT NULL); 
+        INSERT INTO Test VALUES('00:00:00'); 
+        INSERT INTO Test VALUES('01:01:01');
+        INSERT INTO Test VALUES('00:00:00');");
+
+      using (var command = new MySqlCommand(@"SELECT tm FROM Test", Connection))
+      {
+        command.Prepare();
+        using (var reader = command.ExecuteReader())
+        {
+          Assert.True(reader.Read());
+          Assert.AreEqual("00:00:00", reader.GetValue(0).ToString());
+          Assert.AreEqual("00:00:00", reader.GetTimeSpan(0).ToString());
+
+          Assert.True(reader.Read());
+          Assert.AreEqual("01:01:01", reader.GetValue(0).ToString());
+          Assert.AreEqual("01:01:01", reader.GetTimeSpan(0).ToString());
+
+          Assert.True(reader.Read());
+          Assert.AreEqual("00:00:00", reader.GetValue(0).ToString());
+          Assert.AreEqual("00:00:00", reader.GetTimeSpan(0).ToString());
+        }
+      }
+    }
+
+    /// <summary>
+    /// Bug #32933120 - CAN'T USE TIMESPAN VALUE WITH MICROSECONDS USING PREPARED STATEMENT
+    /// At the moment of writing the time value, the calculation of microseconds was wrong
+    /// </summary>
+    [Test]
+    public void TimespanWithMicrosecondsPrepared()
+    {
+      ExecuteSQL("CREATE TABLE Test (tm TIME(4))");
+      var value = new TimeSpan(0, 0, 0, 1, 234) + TimeSpan.FromTicks(5000);
+
+      using var cmd = new MySqlCommand();
+      cmd.Connection = Connection;
+      cmd.Parameters.AddWithValue("@value", value);
+
+      // Try the INSERT
+      cmd.CommandText = "INSERT INTO Test VALUES(@value)";
+      cmd.Prepare();
+      Assert.AreEqual(1, cmd.ExecuteNonQuery());
+
+      // Try the SELECT
+      cmd.CommandText = "SELECT tm FROM Test WHERE tm = @value;";
+      cmd.Prepare();
+      using var reader = cmd.ExecuteReader();
+      Assert.IsTrue(reader.Read());
+      Assert.AreEqual(value, reader.GetValue(0));
     }
   }
 }

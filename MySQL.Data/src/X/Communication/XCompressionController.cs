@@ -34,7 +34,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
-using Zstandard.Net;
+using ZstdNet;
 
 namespace MySqlX.Communication
 {
@@ -112,7 +112,7 @@ namespace MySqlX.Communication
     /// <summary>
     /// Indicates if the libzstd.dll has been loaded.
     /// </summary>
-    internal static bool? LibZstdLoaded;
+    private static bool? _libZstdLoaded;
 
     /// <summary>
     /// Stream used to store multiple X Protocol messages.
@@ -122,7 +122,7 @@ namespace MySqlX.Communication
     /// <summary>
     /// ZStandard stream used for decompressing data.
     /// </summary>
-    private ZstandardStream _zstdDecompressStream;
+    private DecompressionStream _zstdDecompressStream;
 
     #endregion
 
@@ -157,7 +157,7 @@ namespace MySqlX.Communication
         case CompressionAlgorithms.zstd_stream:
           if (!_initializeForCompression)
           {
-            _zstdDecompressStream = new ZstandardStream(_buffer, CompressionMode.Decompress);
+            _zstdDecompressStream = new DecompressionStream(_buffer);
           }
           break;
 #if !NETFRAMEWORK
@@ -278,9 +278,10 @@ namespace MySqlX.Communication
     {
       byte[] compressedData;
       using (var memoryStream = new MemoryStream())
-      using (var compressionStream = new ZstandardStream(memoryStream, CompressionMode.Compress))
+      using (var compressionStream = new CompressionStream(memoryStream))
       {
         compressionStream.Write(input, 0, input.Length);
+        compressionStream.Flush();
         compressionStream.Close();
         compressedData = memoryStream.ToArray();
       }
@@ -404,12 +405,15 @@ namespace MySqlX.Communication
     {
       _buffer.Write(input, 0, input.Length);
       _buffer.Position -= input.Length;
-      var target = new MemoryStream();
-      _zstdDecompressStream.CopyTo(target, length);
-      _zstdDecompressStream.Flush();
-      var decompressedData = target.ToArray();
-      target.Dispose();
-      _buffer.SetLength(0);
+
+      byte[] decompressedData;
+      using (var target = new MemoryStream())
+      {
+        _zstdDecompressStream.CopyTo(target, length);
+        decompressedData = target.ToArray();
+        target.Dispose();
+        _buffer.SetLength(0);
+      }
 
       return decompressedData;
     }
@@ -471,35 +475,33 @@ namespace MySqlX.Communication
     /// <summary>
     /// Loads the libzstd.dll assembly.
     /// </summary>
-    internal static void LoadLibzstdLibrary()
+    internal static void LoadLibzstdLibrary(ref List<string> supportedAlgorithms)
     {
-      // If the library has already been loaded, there is no need to load it again.
-      if (LibZstdLoaded != null)
+      // If the library has not been loaded, then try to load it.
+      if (_libZstdLoaded == null)
       {
-        return;
-      }
+        // Attempt to load the library from an embedded resource.
+        _libZstdLoaded = UnmanagedLibraryLoader.LoadUnmanagedLibraryFromEmbeddedResources("MySql.Data", "libzstd.dll");
 
-      // Attempt to load the library from an embedded resource.
-      LibZstdLoaded = UnmanagedLibraryLoader.LoadUnmanagedLibraryFromEmbeddedResources("MySql.Data", "libzstd.dll");
-
-      // If loading from an embedded resource fails, attempt to load it from a file in the output folder.
-      if (LibZstdLoaded == false)
-      {
-        ZstandardInterop.LoadLibzstdLibrary(string.Empty);
-        try
+        // If loading from an embedded resource fails, attempt to load it from a file in the output folder.
+        if (_libZstdLoaded == false)
         {
-          // Creating this temporary stream to check if the library was loaded succesfully.
-          using (var testStream = new ZstandardStream(new MemoryStream(), CompressionMode.Compress))
-          { }
+          try
+          {
+            // Creating this temporary stream to check if the library was loaded succesfully.
+            using (var testStream = new CompressionStream(new MemoryStream()))
+            { }
 
-          LibZstdLoaded = true;
+            _libZstdLoaded = true;
+          }
+          catch { }
         }
-        catch { }
       }
 
-      // If all attempts fail, log a warning and update the client supported compression algorithms.
-      if (LibZstdLoaded == false)
+      // If we failed to load the library, then log a warning and update the client supported compression algorithms.
+      if (_libZstdLoaded == false)
       {
+        supportedAlgorithms.Remove("zstd_stream");
         MySqlTrace.LogWarning(-1, ResourcesX.CompressionFailedToLoadLibzstdAssembly);
       }
     }

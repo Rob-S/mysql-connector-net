@@ -26,12 +26,11 @@
 // along with this program; if not, write to the Free Software Foundation, Inc.,
 // 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 
-
-using System;
-using System.Text;
 using MySql.Data.Types;
-using System.Globalization;
 using NUnit.Framework;
+using System;
+using System.Globalization;
+using System.Text;
 
 namespace MySql.Data.MySqlClient.Tests
 {
@@ -68,10 +67,11 @@ namespace MySql.Data.MySqlClient.Tests
     }
 
     [Test]
-    public void TestNotAllowZerDateAndTime()
+    public void TestNotAllowZeroDateAndTime()
     {
       ExecuteSQL("CREATE TABLE Test (id INT NOT NULL, dt DATETIME, d DATE, " +
         "t TIME, ts TIMESTAMP, PRIMARY KEY(id))");
+      var sql_mode = MySqlHelper.ExecuteScalar(Connection, "SELECT @@session.sql_mode");
       ExecuteSQL("SET SQL_MODE=''");
       ExecuteSQL("INSERT INTO Test VALUES(1, 'Test', '0000-00-00', '0000-00-00', '00:00:00')");
       ExecuteSQL("INSERT INTO Test VALUES(2, 'Test', '2004-11-11', '2004-11-11', '06:06:06')");
@@ -92,6 +92,8 @@ namespace MySql.Data.MySqlClient.Tests
         DateTime dt2 = (DateTime)reader.GetValue(2);
         Assert.AreEqual(new DateTime(2004, 11, 11).Date, dt2.Date);
       }
+
+      ExecuteSQL($"SET SQL_MODE = '{sql_mode}'");
     }
 
     [Test]
@@ -113,10 +115,6 @@ namespace MySql.Data.MySqlClient.Tests
         Assert.AreEqual(later.Second, dt.Second);
       }
     }
-
-
-
-
 
     [Test]
     public void TestZeroDateTimeException()
@@ -457,7 +455,7 @@ namespace MySql.Data.MySqlClient.Tests
       {
         while (rdr.Read())
         {
-#if (NETCOREAPP3_1 || NET5_0)
+#if (NETCOREAPP3_1 || NET5_0 || NET6_0)
           Assert.AreEqual(345, rdr.GetTimeSpan(0).Milliseconds);
 #else
           Assert.AreEqual(346, rdr.GetTimeSpan(0).Milliseconds);
@@ -512,9 +510,9 @@ namespace MySql.Data.MySqlClient.Tests
       }
     }
 
-#endregion
+    #endregion
 
-#region TimeStampTests
+    #region TimeStampTests
     [Test]
     public void CanUpdateMillisecondsUsingTimeStampType()
     {
@@ -596,7 +594,7 @@ namespace MySql.Data.MySqlClient.Tests
         }
       }
     }
-#endregion
+    #endregion
 
     /// <summary>
     /// Bug #63812	MySqlDateTime.GetDateTime() does not specify Timezone for TIMESTAMP fields
@@ -896,11 +894,100 @@ namespace MySql.Data.MySqlClient.Tests
         var myTimestampGdt = reader.GetDateTime("mytimestampcolumn");
 
         Assert.True(myTimestampSb.Kind == myTimestampGdt.Kind);
-        Assert.True(conn.driver.timeZoneOffset == ((DateTimeOffset)myTimestampSb).Offset.Hours);
+        Assert.True(conn.driver.timeZoneOffset == ((DateTimeOffset)myTimestampSb).Offset.Hours, $"Driver: {conn.driver.timeZoneOffset}; Sb: {((DateTimeOffset)myTimestampSb).Offset.Hours}");
         Assert.True(conn.driver.timeZoneOffset == ((DateTimeOffset)myTimestampGdt).Offset.Hours);
 
         reader.Close();
       }
+    }
+
+    #region WL14389
+    /// <summary>
+    ///   Bug 17924388
+    /// </summary>
+    [Test, Description("MySQL Datetime Milliseconds ")]
+    public void MilisecondsWithTimeColumn()
+    {
+
+      using (var conn = new MySqlConnection(Settings.ConnectionString))
+      {
+        var cmd = new MySqlCommand();
+        var timeValue = "00:01:32.123456789";
+        conn.Open();
+        cmd.Connection = conn;
+        cmd.CommandText = "DROP TABLE IF EXISTS T";
+        cmd.ExecuteNonQuery();
+
+        cmd.CommandText = "CREATE TABLE T (dt TIME(6));";
+        cmd.ExecuteNonQuery();
+
+        cmd.CommandText = $"INSERT INTO T (dt) VALUES('{timeValue}');";
+        cmd.ExecuteNonQuery();
+
+        cmd.CommandText = "SELECT dt FROM T;";
+        cmd.ExecuteNonQuery();
+
+        using (var reader = cmd.ExecuteReader())
+        {
+          reader.Read();
+          var val = reader.GetValue(0);
+          StringAssert.StartsWith(timeValue.Substring(0, 14), val.ToString());
+        }
+
+        cmd.CommandText = "DROP TABLE IF EXISTS T";
+        cmd.ExecuteNonQuery();
+
+        cmd.CommandText = "CREATE TABLE T (dt TIME(3));";
+        cmd.ExecuteNonQuery();
+
+        cmd.CommandText = $"INSERT INTO T (dt) VALUES('{timeValue}');";
+        cmd.ExecuteNonQuery();
+
+        cmd.CommandText = "SELECT dt FROM T;";
+        cmd.ExecuteNonQuery();
+
+        using (var reader = cmd.ExecuteReader())
+        {
+          reader.Read();
+          var val = reader.GetTimeSpan(0);
+          StringAssert.StartsWith(timeValue.Substring(0, 12), val.ToString());
+        }
+      }
+    }
+    #endregion WL14389
+
+    /// <summary>
+    /// Bug #33539844	- Parser for TIME values differ between Plain and Prepared Statements (Server bug)
+    /// </summary>
+    [Test]
+    public void TimeParserForPlainAndPreparedStmts()
+    {
+      string timeValue = "10-11-12";
+      ExecuteSQL("CREATE TABLE Test (t TIME)");
+
+      // Plain statement
+      Assert.Throws<MySqlException>(() => ExecuteSQL($"INSERT INTO Test VALUES ('{timeValue}')"));
+      // Prepare statement
+      using (var cmd = new MySqlCommand("INSERT INTO Test VALUES (?)", Connection))
+      {
+        cmd.Parameters.AddWithValue("t", timeValue);
+        cmd.Prepare();
+        Assert.Throws<MySqlException>(() => cmd.ExecuteNonQuery());
+      }
+    }
+
+    /// <summary>
+    /// Bug #24495619	- MySqlDateTime type bug in .NET provider
+    /// Added missing implementation of the IConvertible interface
+    /// </summary>
+    [Test]
+    public void IConvertibleImplementation()
+    {
+      var mySqlDateTime = new MySqlDateTime(DateTime.Now);
+
+      Assert.AreEqual(TypeCode.DateTime, ((IConvertible)mySqlDateTime).GetTypeCode());
+      Assert.NotNull(((IConvertible)mySqlDateTime).ToString());
+      Assert.NotNull(Convert.ToString(mySqlDateTime));
     }
   }
 }

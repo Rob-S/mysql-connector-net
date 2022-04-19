@@ -1,4 +1,4 @@
-// Copyright (c) 2013, 2020, Oracle and/or its affiliates. All rights reserved.
+// Copyright (c) 2013, 2021, Oracle and/or its affiliates.
 //
 // This program is free software; you can redistribute it and/or modify
 // it under the terms of the GNU General Public License, version 2.0, as
@@ -28,14 +28,24 @@
 
 using MySql.Data.Common;
 using MySqlX.XDevAPI;
+using NUnit.Framework;
 using System;
 using System.Collections.Generic;
-using NUnit.Framework;
+using System.Data;
 
 namespace MySql.Data.MySqlClient.Tests
 {
   public class ConnectionStringBuilderTests : TestBase
   {
+    private string _sslCa;
+
+    public ConnectionStringBuilderTests()
+    {
+      string cPath = TestContext.CurrentContext.TestDirectory + "\\";
+
+      _sslCa = cPath + "ca.pem";
+    }
+
     [Test]
     public void Simple()
     {
@@ -53,9 +63,9 @@ namespace MySql.Data.MySqlClient.Tests
       Assert.AreEqual(33, Convert.ToInt32(sb.MinimumPoolSize));
       Assert.AreEqual(66, Convert.ToInt32(sb.MaximumPoolSize));
       Assert.AreEqual(1, Convert.ToInt32(sb.Keepalive));
-      Exception  ex = Assert.Throws<ArgumentException>(()=> sb.ConnectionString = "server=localhost;badkey=badvalue");
-#if !(NETCOREAPP3_1 || NET5_0)
-      Assert.AreEqual($"Option not supported.{Environment.NewLine}Parameter name: badkey", ex.Message);        
+      Exception ex = Assert.Throws<ArgumentException>(() => sb.ConnectionString = "server=localhost;badkey=badvalue");
+#if !(NETCOREAPP3_1 || NET5_0 || NET6_0)
+      Assert.AreEqual($"Option not supported.{Environment.NewLine}Parameter name: badkey", ex.Message);
 #else
       Assert.AreEqual("Option not supported. (Parameter 'badkey')", ex.Message);
 #endif
@@ -134,15 +144,16 @@ namespace MySql.Data.MySqlClient.Tests
       Assert.False(s.CheckParameters);
     }
 
-    [Test]
-    public void SettingInvalidKeyThrowsArgumentException()
+    [TestCase("foo keyword")]
+    [TestCase("password4")]
+    public void SettingInvalidKeyThrowsArgumentException(string invalidKey)
     {
       MySqlConnectionStringBuilder s = new MySqlConnectionStringBuilder();
-      Exception ex = Assert.Throws<ArgumentException>(() => s["foo keyword"] = "foo");
+      Exception ex = Assert.Throws<ArgumentException>(() => s[invalidKey] = "foo");
 #if NET452 || NET48
-      Assert.AreEqual($"Option not supported.{Environment.NewLine}Parameter name: foo keyword", ex.Message);           
+      Assert.AreEqual($"Option not supported.{Environment.NewLine}Parameter name: {invalidKey}", ex.Message);           
 #else
-      Assert.AreEqual($"Option not supported. (Parameter 'foo keyword')", ex.Message);
+      Assert.AreEqual($"Option not supported. (Parameter '{invalidKey}')", ex.Message);
 #endif
     }
 
@@ -158,22 +169,44 @@ namespace MySql.Data.MySqlClient.Tests
       Assert.Null(obj);
     }
 
-#if NETCOREAPP3_1
+#if !NETFRAMEWORK
     [Test]
     public void DotnetCoreNotCurrentlySupported()
     {
+      List<string> options = new List<string>(new string[] { "useperformancemonitor", });
+      if (Platform.IsWindows())
+        options.Add("integratedsecurity");
+
+      foreach (string option in options)
+      {
+        PlatformNotSupportedException ex = Assert.Throws<PlatformNotSupportedException>(() =>
+        {
+          MySqlConnectionStringBuilder connString = new MySqlConnectionStringBuilder($"server=localhost;user=root;password=;{option}=dummy");
+        });
+      }
+
+      MySqlConnectionStringBuilder csb = new MySqlConnectionStringBuilder();
+      if (Platform.IsWindows())
+        Assert.Throws<PlatformNotSupportedException>(() => csb.IntegratedSecurity = true);
+      Assert.Throws<PlatformNotSupportedException>(() => csb.UsePerformanceMonitor = true);
+    }
+#endif
+
+#if !NETFRAMEWORK
+    [Test]
+    public void NonWindowsOSNotCurrentlySupported()
+    {
+      if (Platform.IsWindows()) Assert.Ignore("This test is for non Windows OS only.");
+
       List<string> options = new List<string>(new string[]
       {
         "sharedmemoryname",
         "pipe",
-        "useperformancemonitor",
       });
-      if (Platform.IsWindows())
-        options.Add("integratedsecurity");
 
-      foreach(string option in options)
+      foreach (string option in options)
       {
-        PlatformNotSupportedException ex = Assert.Throws<PlatformNotSupportedException>(() => 
+        PlatformNotSupportedException ex = Assert.Throws<PlatformNotSupportedException>(() =>
         {
           MySqlConnectionStringBuilder connString = new MySqlConnectionStringBuilder($"server=localhost;user=root;password=;{option}=dummy");
         });
@@ -181,10 +214,7 @@ namespace MySql.Data.MySqlClient.Tests
 
       MySqlConnectionStringBuilder csb = new MySqlConnectionStringBuilder();
       Assert.Throws<PlatformNotSupportedException>(() => csb.SharedMemoryName = "dummy");
-      if (Platform.IsWindows())
-        Assert.Throws<PlatformNotSupportedException>(() => csb.IntegratedSecurity = true);
       Assert.Throws<PlatformNotSupportedException>(() => csb.PipeName = "dummy");
-      Assert.Throws<PlatformNotSupportedException>(() => csb.UsePerformanceMonitor = true);
       csb.ConnectionProtocol = MySqlConnectionProtocol.Tcp;
       Assert.Throws<PlatformNotSupportedException>(() => csb.ConnectionProtocol = MySqlConnectionProtocol.SharedMemory);
       Assert.Throws<PlatformNotSupportedException>(() => csb.ConnectionProtocol = MySqlConnectionProtocol.NamedPipe);
@@ -229,5 +259,181 @@ namespace MySql.Data.MySqlClient.Tests
       builder.TableCaching = true;
       Assert.True(builder.TableCaching);
     }
+
+    /// <summary>
+    /// WL14429 - [Classic] Support for authentication_kerberos_client authentication plugin
+    /// Added new connection string option: DefaultAuthenticationPlugin
+    /// </summary>
+    /// <param name="method"></param>
+    [TestCase("3")]
+    [TestCase("invalidAuthenticationPlugin")]
+    public void SettingInvalidAuthenticationMethod(string method)
+    {
+      var builder = new MySqlConnectionStringBuilder();
+      builder.DefaultAuthenticationPlugin = " ";
+      var ex = Assert.Throws<MySqlException>(() => builder.DefaultAuthenticationPlugin = method);
+      StringAssert.AreEqualIgnoringCase(string.Format(Resources.AuthenticationMethodNotSupported, method), ex.Message);
+
+      var connStr = $"server=localhost;userid=root;defaultauthenticationplugin={method}";
+      ex = Assert.Throws<MySqlException>(() => new MySqlConnection(connStr));
+      StringAssert.AreEqualIgnoringCase(string.Format(Resources.AuthenticationMethodNotSupported, method), ex.Message);
+
+      connStr = "server=localhost;userid=root;defaultauthenticationplugin=";
+      var conn = new MySqlConnection(connStr);
+    }
+
+    /// <summary>
+    /// WL14653 - Support for MFA (multi factor authentication) authentication
+    /// 'Password1' and 'pwd1' should be interpreted as aliases for 'password' connection option
+    /// </summary>
+    [TestCase("password1")]
+    [TestCase("pwd1")]
+    public void UsingPwdAliases(string alias)
+    {
+      string value = "test";
+      var conn = new MySqlConnection($"{alias}={value};pwd2={value};pwd3={value}");
+      StringAssert.AreEqualIgnoringCase(value, conn.Settings.Password);
+      StringAssert.AreEqualIgnoringCase(value, conn.Settings.Password2);
+      StringAssert.AreEqualIgnoringCase(value, conn.Settings.Password3);
+
+      var connBuilder = new MySqlConnectionStringBuilder();
+      connBuilder[alias] = value;
+      connBuilder["pwd2"] = value;
+      connBuilder["pwd3"] = value;
+      StringAssert.AreEqualIgnoringCase(value, connBuilder.Password);
+      StringAssert.AreEqualIgnoringCase(value, connBuilder.Password2);
+      StringAssert.AreEqualIgnoringCase(value, connBuilder.Password3);
+    }
+
+    #region WL14389
+
+    [Test, Description("Session BaseString/MySQLConnectionString Builder")]
+    public void ConnectionStringBuilderClassicTests()
+    {
+      if (!Platform.IsWindows()) Assert.Ignore("This test is for Windows OS only.");
+
+      MySqlConnectionStringBuilder mysql = new MySqlConnectionStringBuilder(Settings.ConnectionString);
+
+      mysql.ConnectionProtocol = MySqlConnectionProtocol.Tcp;
+      mysql.CharacterSet = "utf8mb4";
+      mysql.SslMode = MySqlSslMode.Required;
+      mysql.ConnectionTimeout = 10;
+      mysql.Keepalive = 10;
+      mysql.CertificateFile = _sslCa;
+      mysql.CertificatePassword = "pass";
+      mysql.CertificateStoreLocation = MySqlCertificateStoreLocation.LocalMachine;
+      mysql.CertificateThumbprint = "";
+
+      using (var conn = new MySqlConnection(mysql.ConnectionString))
+      {
+        conn.Open();
+        Assert.AreEqual(ConnectionState.Open, conn.connectionState);
+      }
+
+      mysql = new MySqlConnectionStringBuilder(Settings.ConnectionString);
+      mysql.ConnectionProtocol = MySqlConnectionProtocol.Tcp;
+      mysql.CharacterSet = "utf8mb4";
+      mysql.SslMode = MySqlSslMode.VerifyCA;
+      mysql.ConnectionTimeout = 10;
+      mysql.Keepalive = 10;
+      mysql.CertificateFile = _sslCa;
+      mysql.CertificatePassword = "pass";
+      mysql.CertificateStoreLocation = MySqlCertificateStoreLocation.LocalMachine;
+      mysql.CertificateThumbprint = "";
+
+      using (var conn = new MySqlConnection(mysql.ConnectionString))
+      {
+        conn.Open();
+        Assert.AreEqual(ConnectionState.Open, conn.connectionState);
+      }
+
+      mysql = new MySqlConnectionStringBuilder(Settings.ConnectionString);
+      mysql.ConnectionProtocol = MySqlConnectionProtocol.Tcp;
+      mysql.CharacterSet = "utf8mb4";
+      mysql.SslMode = MySqlSslMode.Required;
+      mysql.ConnectionTimeout = 10;
+      mysql.Keepalive = 10;
+
+      using (var conn = new MySqlConnection(mysql.ConnectionString))
+      {
+        conn.Open();
+        Assert.AreEqual(ConnectionState.Open, conn.connectionState);
+      }
+
+      ////Scenario-2
+      ////MySQL Connection
+      mysql = new MySqlConnectionStringBuilder(Settings.ConnectionString);
+      mysql.ConnectionProtocol = MySqlConnectionProtocol.Tcp;
+      mysql.CharacterSet = "utf8mb4";
+      mysql.SslMode = MySqlSslMode.Required;
+      mysql.ConnectionTimeout = 10;
+      mysql.Keepalive = 10;
+      mysql.CertificateFile = _sslCa;
+      mysql.CertificatePassword = "pass";
+      mysql.CertificateStoreLocation = MySqlCertificateStoreLocation.LocalMachine;
+      mysql.CertificateThumbprint = "";
+      mysql.AllowPublicKeyRetrieval = true;
+      mysql.UseCompression = true;
+      mysql.AllowBatch = true;
+      mysql.Logging = true;
+      mysql.DefaultCommandTimeout = 10;
+      mysql.UseDefaultCommandTimeoutForEF = true;
+      mysql.PersistSecurityInfo = true;
+      mysql.AutoEnlist = true;
+      mysql.IncludeSecurityAsserts = true;
+      mysql.AllowZeroDateTime = true;
+      mysql.ConvertZeroDateTime = true;
+      mysql.UseUsageAdvisor = true;
+      mysql.ProcedureCacheSize = 20;
+      mysql.RespectBinaryFlags = true;
+      mysql.TreatTinyAsBoolean = true;
+      mysql.AllowUserVariables = true;
+      mysql.InteractiveSession = true;
+      mysql.FunctionsReturnString = true;
+      mysql.UseAffectedRows = true;
+      mysql.OldGuids = true;
+      mysql.SqlServerMode = true;
+      mysql.DefaultTableCacheAge = 20;
+      mysql.CheckParameters = true;
+      mysql.Replication = true;
+      mysql.ConnectionLifeTime = 10;
+      mysql.Pooling = true;
+      mysql.MinimumPoolSize = 5;
+      mysql.MaximumPoolSize = 100;
+      mysql.ConnectionReset = true;
+      mysql.CacheServerProperties = true;
+      mysql.TreatBlobsAsUTF8 = true;
+      mysql.BlobAsUTF8IncludePattern = "BLOBI";
+      mysql.BlobAsUTF8ExcludePattern = "BLOBE";
+      mysql.TableCaching = false;
+
+      using (var conn = new MySqlConnection(mysql.ConnectionString))
+      {
+        conn.Open();
+        Assert.AreEqual(ConnectionState.Open, conn.connectionState);
+      }
+
+      mysql.SslCa = _sslCa;
+
+      using (var conn = new MySqlConnection(mysql.ConnectionString))
+      {
+        conn.Open();
+        Assert.AreEqual(ConnectionState.Open, conn.connectionState);
+      }
+
+      ////Basic Scenarios
+      string connectionstr = "server = " + mysql.Server + "; database = " + mysql.Database + "; protocol = Socket; port = "
+          + mysql.Port + "; user id = " + mysql.UserID + "; password = " + mysql.Password +
+          "; characterset = utf8mb4; sslmode = Required; connectiontimeout = 10; keepalive = 10; certificatefile = "
+          + _sslCa + "; certificatepassword = pass; certificatestorelocation = LocalMachine; certificatethumbprint = ";
+      using (var conn = new MySqlConnection(mysql.ConnectionString))
+      {
+        conn.Open();
+        Assert.AreEqual(ConnectionState.Open, conn.connectionState);
+      }
+    }
+
+    #endregion WL14389
+
   }
 }

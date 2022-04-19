@@ -1,4 +1,4 @@
-// Copyright (c) 2019, 2020, Oracle and/or its affiliates. All rights reserved.
+// Copyright (c) 2019, 2021, Oracle and/or its affiliates. All rights reserved.
 //
 // This program is free software; you can redistribute it and/or modify
 // it under the terms of the GNU General Public License, version 2.0, as
@@ -26,9 +26,9 @@
 // along with this program; if not, write to the Free Software Foundation, Inc.,
 // 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 
-using System;
-using NUnit.Framework;
 using MySql.Data.Failover;
+using NUnit.Framework;
+using System;
 using System.Data;
 
 namespace MySql.Data.MySqlClient.Tests
@@ -48,7 +48,7 @@ namespace MySql.Data.MySqlClient.Tests
     public void RandomMethod(string server, bool shouldPass = true)
     {
       Settings.Pooling = false;
-      Settings.Server = server;
+      Settings.Server = server.Replace("localhost", Host).Replace("::1", GetMySqlServerIp(true));
 
       if (!shouldPass)
       {
@@ -73,20 +73,20 @@ namespace MySql.Data.MySqlClient.Tests
     [Test]
     public void PriorityMethod()
     {
-#if NETCOREAPP3_1 || NET5_0
+#if NETCOREAPP3_1 || NET5_0 || NET6_0
       if (!System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Windows)) Assert.Ignore();
 #endif
       // Multiple hosts and validate proper order assigned to hosts.
       Settings.Pooling = false;
-      Settings.Server = "(address=server.example,priority=100),(address=127.0.0.1,priority=25),(address=192.0.10.56,priority=75)";
+      Settings.Server = $"(address=server.example,priority=100),(address={Host},priority=25),(address=192.0.10.56,priority=75)";
       using (MySqlConnection conn = new MySqlConnection(Settings.ConnectionString))
       {
         conn.Open();
         Assert.AreEqual(ConnectionState.Open, conn.State);
-        Assert.AreEqual("127.0.0.1", conn.Settings.Server);
+        Assert.AreEqual(Host, conn.Settings.Server);
         Assert.AreEqual("server.example", FailoverManager.FailoverGroup.Hosts[0].Host);
         Assert.AreEqual("192.0.10.56", FailoverManager.FailoverGroup.Hosts[1].Host);
-        Assert.AreEqual("127.0.0.1", FailoverManager.FailoverGroup.Hosts[2].Host);
+        Assert.AreEqual(Host, FailoverManager.FailoverGroup.Hosts[2].Host);
       }
 
       // Multiple hosts with IPv6
@@ -107,7 +107,7 @@ namespace MySql.Data.MySqlClient.Tests
       for (int i = 1; i <= 105; i++)
       {
         hostList += "(address=server" + i + ".example,priority=" + (priority != 0 ? priority-- : 0) + "),";
-        if (i == 105) hostList += "(address=localhost,priority=0)";
+        if (i == 105) hostList += $"(address={Host},priority=0)";
       }
 
       Settings.Server = hostList;
@@ -131,7 +131,7 @@ namespace MySql.Data.MySqlClient.Tests
     [TestCase("(address=server.example,priority=100),(address=10.10.10.10,priority=25),(address=192.0.10.56,priority=75)", "Unable to connect to any of the specified MySQL hosts.", "mysql")] // Multiple hosts. All attempts fail.
     public void PriorityMethodConnectionFail(string server, string exceptionMessage, string exceptionType)
     {
-      Settings.Server = server;
+      Settings.Server = server.Replace("127.0.0.1", Host);
       using (MySqlConnection conn = new MySqlConnection(Settings.ConnectionString))
       {
         Exception ex;
@@ -150,7 +150,7 @@ namespace MySql.Data.MySqlClient.Tests
     {
       Settings.Pooling = true;
       Settings.MinimumPoolSize = 10;
-      Settings.Server = server;
+      Settings.Server = server.Replace("localhost", Host);
 
       MySqlConnection[] connArray = new MySqlConnection[10];
       for (int i = 0; i < connArray.Length; i++)
@@ -173,6 +173,18 @@ namespace MySql.Data.MySqlClient.Tests
       // close connections
       for (int i = 0; i < connArray.Length; i++)
         connArray[i].Close();
+    }
+
+    /// <summary>
+    /// Bug #30581109 - XPLUGIN/CLASSIC CONNECTION SUCCEEDS WHEN MULTIPLE HOSTS ARE USED IN WHICH FIRST HOST FAILS WITH MYSQL ERROR LIKE HOST EXHAUSTED ALL THE CONNECTIONS OR WRONG CREDENTIALS AND THE OTHER HOST IS VALID-WL#13304
+    /// Due to the restrictions of the automated test, the approach to this test is to have one invalid host that will be attempted to connect to first given its priority throwing a timeout error, then C/NET will then try with the second host raising a MySQL exception.
+    /// </summary>
+    [Test]
+    public void FailWhenMySqlExceptionRaised()
+    {
+      ExecuteSQL("CREATE USER 'test1'@'%' IDENTIFIED BY 'testpass'", true);
+      var address_priority = $"(address={Host}, priority=90),(address=10.20.30.40, priority=100)";
+      Assert.Throws<MySqlException>(() => new MySqlConnection($"server={address_priority};port={Port};user=test1;pwd=wrongPass;").Open());
     }
   }
 }
