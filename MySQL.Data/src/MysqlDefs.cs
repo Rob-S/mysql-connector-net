@@ -1,4 +1,4 @@
-// Copyright (c) 2004, 2021, Oracle and/or its affiliates.
+// Copyright (c) 2004, 2022, Oracle and/or its affiliates.
 //
 // This program is free software; you can redistribute it and/or modify
 // it under the terms of the GNU General Public License, version 2.0, as
@@ -404,11 +404,19 @@ namespace MySql.Data.MySqlClient
     /// <summary>
     /// Do not use SSL.
     /// </summary>
+    [Obsolete("Use 'MySqlSslMode.Disabled' instead.")]
     None,
+    /// <summary>
+    /// Do not use SSL.
+    /// </summary>
+    Disabled = None,
     /// <summary>
     /// Use SSL, if server supports it. This option is only available for the classic protocol.
     /// </summary>
     Preferred,
+    /// <summary>
+    /// Use SSL, if server supports it. This option is only available for the classic protocol.
+    /// </summary>
     Prefered = Preferred,
     /// <summary>
     /// Always use SSL. Deny connection if server does not support SSL.

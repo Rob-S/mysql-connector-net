@@ -1,4 +1,4 @@
-﻿// Copyright © 2004, 2018, Oracle and/or its affiliates. All rights reserved.
+﻿// Copyright (c) 2022, Oracle and/or its affiliates.
 //
 // This program is free software; you can redistribute it and/or modify
 // it under the terms of the GNU General Public License, version 2.0, as
@@ -26,41 +26,21 @@
 // along with this program; if not, write to the Free Software Foundation, Inc.,
 // 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 
-using System;
-using System.ComponentModel;
-using System.Drawing;
+using Microsoft.EntityFrameworkCore.Migrations.Operations;
+using System.Diagnostics;
 
-namespace MySql.Data.MySqlClient
+namespace MySql.EntityFrameworkCore.Migrations.Operations
 {
-#if NET452
-  [ToolboxBitmap(typeof(MySqlCommand), "MySqlClient.resources.command.bmp")]
-#endif
-  [DesignerCategory("Code")]
-  public sealed partial class MySqlCommand : ICloneable
+  /// <summary>
+  ///     A <see cref="MigrationOperation" /> for dropping a primary key.
+  /// </summary>
+
+  [DebuggerDisplay("ALTER TABLE {Table} DROP CONSTRAINT {Name}")]
+  public class MySQLDropPrimaryKeyAndRecreateForeignKeysOperation : DropPrimaryKeyOperation
   {
-
     /// <summary>
-    /// Creates a clone of this <see cref="MySqlCommand"/> object.  CommandText, Connection, and Transaction properties
-    /// are included as well as the entire parameter list.
+    ///     Recreate all foreign keys or not.
     /// </summary>
-    /// <returns>The cloned <see cref="MySqlCommand"/> object.</returns>
-    public object Clone()
-    {
-      MySqlCommand clone = new MySqlCommand(cmdText, connection, Transaction)
-      {
-        CommandType = CommandType,
-        commandTimeout = commandTimeout,
-        useDefaultTimeout = useDefaultTimeout,
-        BatchableCommandText = BatchableCommandText,
-        EnableCaching = EnableCaching,
-        CacheAge = CacheAge
-      };
-
-      foreach (MySqlParameter p in Parameters)
-      {
-        clone.Parameters.Add(p.Clone());
-      }
-      return clone;
-    }
+    public virtual bool RecreateForeignKeys { get; set; }
   }
 }

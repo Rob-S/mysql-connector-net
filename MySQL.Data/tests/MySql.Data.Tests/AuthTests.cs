@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2016, 2021, Oracle and/or its affiliates.
+﻿// Copyright (c) 2016, 2022, Oracle and/or its affiliates.
 //
 // This program is free software; you can redistribute it and/or modify
 // it under the terms of the GNU General Public License, version 2.0, as
@@ -26,6 +26,7 @@
 // along with this program; if not, write to the Free Software Foundation, Inc.,
 // 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 
+using MySql.Data.Authentication.FIDO.Utility;
 using MySql.Data.Common;
 using MySql.Data.MySqlClient.Authentication;
 using NUnit.Framework;
@@ -388,7 +389,7 @@ namespace MySql.Data.MySqlClient.Tests
       }
 
       // User with password over non-TLS connection.
-      settings.SslMode = MySqlSslMode.None;
+      settings.SslMode = MySqlSslMode.Disabled;
       using (MySqlConnection connection = new MySqlConnection(settings.ConnectionString))
       {
         connection.Open();
@@ -453,7 +454,7 @@ namespace MySql.Data.MySqlClient.Tests
         }
       }
 
-      settings.SslMode = MySqlSslMode.None;
+      settings.SslMode = MySqlSslMode.Disabled;
       using (MySqlConnection connection = new MySqlConnection(settings.ConnectionString))
       {
         if (serverCompiledUsingOpenSsl)
@@ -532,7 +533,7 @@ namespace MySql.Data.MySqlClient.Tests
         }
       }
 
-      settings.SslMode = MySqlSslMode.None;
+      settings.SslMode = MySqlSslMode.Disabled;
       using (MySqlConnection connection = new MySqlConnection(settings.ConnectionString))
       {
         Exception ex = Assert.Throws<MySqlException>(() => connection.Open()); ;
@@ -567,7 +568,7 @@ namespace MySql.Data.MySqlClient.Tests
       settings.Password = password;
       CreateUser(userName, password, pluginName);
 
-      settings.SslMode = MySqlSslMode.None;
+      settings.SslMode = MySqlSslMode.Disabled;
       using (MySqlConnection connection = new MySqlConnection(settings.ConnectionString))
       {
         connection.Open();
@@ -644,7 +645,7 @@ namespace MySql.Data.MySqlClient.Tests
       }
 
       // TLS not enabled.
-      builder.SslMode = MySqlSslMode.None;
+      builder.SslMode = MySqlSslMode.Disabled;
       using (MySqlConnection connection = new MySqlConnection(builder.ConnectionString))
       {
         connection.Open();
@@ -661,7 +662,7 @@ namespace MySql.Data.MySqlClient.Tests
       StringAssert.StartsWith("Access denied for user", ex.InnerException.Message);
 
       // TLS not enabled.
-      builder.SslMode = MySqlSslMode.None;
+      builder.SslMode = MySqlSslMode.Disabled;
       ex = Assert.Throws<MySqlException>(() => new MySqlConnection(builder.ConnectionString).Open());
       StringAssert.StartsWith("Access denied for user", ex.InnerException.Message);
 
@@ -685,7 +686,7 @@ namespace MySql.Data.MySqlClient.Tests
       {
         builder.UserID = "testCachingSha2";
         builder.Password = "test";
-        builder.SslMode = MySqlSslMode.None;
+        builder.SslMode = MySqlSslMode.Disabled;
 
         using (MySqlConnection connection = new MySqlConnection(builder.ConnectionString))
         {
@@ -753,7 +754,7 @@ namespace MySql.Data.MySqlClient.Tests
         }
       }
 
-      settings.SslMode = MySqlSslMode.None;
+      settings.SslMode = MySqlSslMode.Disabled;
       using (MySqlConnection connection = new MySqlConnection(settings.ConnectionString))
       {
         Exception ex = Assert.Throws<MySqlException>(() => connection.Open());
@@ -813,7 +814,7 @@ namespace MySql.Data.MySqlClient.Tests
       }
 
       // Success since the user exists in the cache.
-      settings.SslMode = MySqlSslMode.None;
+      settings.SslMode = MySqlSslMode.Disabled;
       using (MySqlConnection connection = new MySqlConnection(settings.ConnectionString))
       {
         connection.Open();
@@ -867,7 +868,7 @@ namespace MySql.Data.MySqlClient.Tests
       settings.Password = password;
       CreateUser(userName, password, pluginName);
 
-      settings.SslMode = MySqlSslMode.None;
+      settings.SslMode = MySqlSslMode.Disabled;
       using (MySqlConnection connection = new MySqlConnection(settings.ConnectionString))
       {
         connection.Open();
@@ -1001,7 +1002,7 @@ namespace MySql.Data.MySqlClient.Tests
       CreateUser(userName, ldapstr, pluginName);
       settings.UserID = userName;
       settings.Password = "Testpw1";
-      settings.SslMode = MySqlSslMode.None;
+      settings.SslMode = MySqlSslMode.Disabled;
       using (MySqlConnection connection = new MySqlConnection(settings.ConnectionString))
       {
         Exception ex = Assert.Throws<MySqlException>(() => connection.Open());
@@ -1174,7 +1175,7 @@ namespace MySql.Data.MySqlClient.Tests
         UserID = userName,
         Password = password,
         Database = string.Empty,
-        SslMode = MySqlSslMode.None
+        SslMode = MySqlSslMode.Disabled
       };
 
       ExecuteSQL("CREATE USER 'test1@MYSQL.LOCAL' IDENTIFIED WITH authentication_ldap_sasl; GRANT ALL ON *.* to 'test1@MYSQL.LOCAL';", true);
@@ -1304,7 +1305,7 @@ namespace MySql.Data.MySqlClient.Tests
         UserID = userName,
         Password = password,
         Database = string.Empty,
-        SslMode = MySqlSslMode.None,
+        SslMode = MySqlSslMode.Disabled,
         DefaultAuthenticationPlugin = pluginName
       };
 
@@ -1576,6 +1577,147 @@ namespace MySql.Data.MySqlClient.Tests
     }
     #endregion
 
+    #region FIDO Authentication
+    /// <summary>
+    /// WL14871 - Support FIDO authentication [classic]
+    /// </summary>
+    [Test]
+    [Ignore("This should be executed manually since it depends on libfido2 library")]
+    [Property("Category", "Security")]
+    public void FidoAuthentication1F()
+    {
+      // Install FIDO plugin
+      ExecuteSQL("INSTALL PLUGIN authentication_fido SONAME 'authentication_fido.so';", true);
+      // Create user
+      // The INITIAL AUTHENTICATION IDENTIFIED clause must be specified to set a random or a static password.
+      ExecuteSQL("CREATE USER 'user_f1'@'localhost' IDENTIFIED WITH authentication_fido INITIAL AUTHENTICATION IDENTIFIED BY 'bar';", true);
+
+      // Register the authenticator
+      // $ mysql --user=user_f1 --fido-register-factor=1
+
+      var connStringBuilder = new MySqlConnectionStringBuilder()
+      {
+        UserID = "user_f1",
+        Server = Settings.Server,
+        Port = Settings.Port
+      };
+
+      using var conn = new MySqlConnection(connStringBuilder.ConnectionString);
+      conn.FidoActionRequested += Conn_FidoActionRequested;
+      conn.Open();
+      Assert.AreEqual(ConnectionState.Open, conn.State);
+    }
+
+    [Test]
+    [Ignore("This should be executed manually since it depends on libfido2 library")]
+    [Property("Category", "Security")]
+    public void FidoAuthentication2F()
+    {
+      // Install FIDO plugin
+      ExecuteSQL("INSTALL PLUGIN authentication_fido SONAME 'authentication_fido.so';", true);
+      // Create user
+      ExecuteSQL("CREATE USER 'user_f2'@'localhost' IDENTIFIED BY 'bar' AND IDENTIFIED WITH authentication_fido;", true);
+
+      // Register the authenticator
+      // $ mysql --user=user_f2 --fido-register-factor=2
+
+      var connStringBuilder = new MySqlConnectionStringBuilder()
+      {
+        UserID = "user_f2",
+        Password = "bar",
+        Server = Settings.Server,
+        Port = Settings.Port
+      };
+
+      using var conn = new MySqlConnection(connStringBuilder.ConnectionString);
+      conn.FidoActionRequested += Conn_FidoActionRequested;
+      conn.Open();
+      Assert.AreEqual(ConnectionState.Open, conn.State);
+    }
+
+    [Test]
+    [Ignore("This should be executed manually since it depends on libfido2 library")]
+    [Property("Category", "Security")]
+    public void FidoAuthentication3F()
+    {
+      // Install FIDO plugin
+      ExecuteSQL("INSTALL PLUGIN authentication_fido SONAME 'authentication_fido.so';", true);
+      // Create user
+      ExecuteSQL("CREATE USER 'user_f3'@'localhost' IDENTIFIED BY 'bar' AND IDENTIFIED BY 'baz' AND IDENTIFIED WITH authentication_fido;", true);
+
+      // Register the authenticator
+      // $ mysql --user=user_f3 --fido-register-factor=3
+
+      var connStringBuilder = new MySqlConnectionStringBuilder()
+      {
+        UserID = "user_f3",
+        Password = "bar",
+        Password2 = "baz",
+        Server = Settings.Server,
+        Port = Settings.Port
+      };
+
+      using var conn = new MySqlConnection(connStringBuilder.ConnectionString);
+      conn.FidoActionRequested += Conn_FidoActionRequested;
+      conn.Open();
+      Assert.AreEqual(ConnectionState.Open, conn.State);
+    }
+
+    [Test]
+    [Ignore("This should be executed manually since it depends on libfido2 library")]
+    [Property("Category", "Security")]
+    public void FidoAuthenticationNoUserGestureException()
+    {
+      // Install FIDO plugin
+      ExecuteSQL("INSTALL PLUGIN authentication_fido SONAME 'authentication_fido.so';", true);
+      // Create user
+      ExecuteSQL("CREATE USER 'user_f2'@'localhost' IDENTIFIED BY 'bar' AND IDENTIFIED WITH authentication_fido;", true);
+
+      // Register the authenticator
+      // $ mysql --user=user_f2 --fido-register-factor=2
+
+      var connStringBuilder = new MySqlConnectionStringBuilder()
+      {
+        UserID = "user_f2",
+        Password = "bar",
+        Server = Settings.Server,
+        Port = Settings.Port
+      };
+
+      using var conn = new MySqlConnection(connStringBuilder.ConnectionString);
+      conn.FidoActionRequested += Conn_FidoActionRequested;
+      Assert.Throws<CtapException>(()=> conn.Open());
+    }
+
+    [Test]
+    [Ignore("This should be executed manually since it depends on libfido2 library")]
+    [Property("Category", "Security")]
+    public void FidoAuthenticationUnregisteredUserException()
+    {
+      // Install FIDO plugin
+      ExecuteSQL("INSTALL PLUGIN authentication_fido SONAME 'authentication_fido.so';", true);
+      // Create user
+      ExecuteSQL("CREATE USER 'user_f2'@'localhost' IDENTIFIED BY 'bar' AND IDENTIFIED WITH authentication_fido;", true);
+
+      var connStringBuilder = new MySqlConnectionStringBuilder()
+      {
+        UserID = "user_f2",
+        Password = "bar",
+        Server = Settings.Server,
+        Port = Settings.Port
+      };
+
+      using var conn = new MySqlConnection(connStringBuilder.ConnectionString);
+      conn.FidoActionRequested += Conn_FidoActionRequested;
+      Assert.Throws<MySqlException>(() => conn.Open());
+    }
+
+    private static void Conn_FidoActionRequested()
+    {
+      Console.WriteLine("Please insert FIDO device and perform gesture action for authentication to complete.");
+    }
+    #endregion
+
     #region WL14389
 
     [Test, Description("Test User Authentication Fails with classic protocol")]
@@ -1646,7 +1788,7 @@ namespace MySql.Data.MySqlClient.Tests
       }
 
       // Authentication fails with full authentication - TLS connection.SSL Mode default disabled
-      builder.SslMode = MySqlSslMode.None;
+      builder.SslMode = MySqlSslMode.Disabled;
       using (MySqlConnection connection = new MySqlConnection(builder.ConnectionString))
       {
         Assert.Throws<MySqlException>(() => connection.Open());
@@ -1705,7 +1847,7 @@ namespace MySql.Data.MySqlClient.Tests
 
       if (serverCompiledUsingOpenSsl)
       {
-        builder.SslMode = MySqlSslMode.None;
+        builder.SslMode = MySqlSslMode.Disabled;
         using (MySqlConnection connection = new MySqlConnection(builder.ConnectionString + ";AllowPublicKeyRetrieval=false;pooling=false"))
         {
           Assert.Throws<MySqlException>(() => connection.Open());
@@ -1755,7 +1897,7 @@ namespace MySql.Data.MySqlClient.Tests
         connection.Close();
       }
 
-      builder.SslMode = MySqlSslMode.None;
+      builder.SslMode = MySqlSslMode.Disabled;
       using (MySqlConnection connection = new MySqlConnection(builder.ConnectionString))
       {
         connection.Open();
@@ -1766,7 +1908,7 @@ namespace MySql.Data.MySqlClient.Tests
       builder.SslMode = MySqlSslMode.Required;
       Assert.Throws<MySqlException>(() => new MySqlConnection(builder.ConnectionString).Open());
 
-      builder.SslMode = MySqlSslMode.None;
+      builder.SslMode = MySqlSslMode.Disabled;
       Assert.Throws<MySqlException>(() => new MySqlConnection(builder.ConnectionString).Open());
 
       pluginName = "mysql_native_password";
@@ -1783,7 +1925,7 @@ namespace MySql.Data.MySqlClient.Tests
       }
 
 
-      builder.SslMode = MySqlSslMode.None;
+      builder.SslMode = MySqlSslMode.Disabled;
       using (MySqlConnection connection = new MySqlConnection(builder.ConnectionString))
       {
         connection.Open();
@@ -1798,7 +1940,7 @@ namespace MySql.Data.MySqlClient.Tests
       }
 
       ExecuteSQL("flush privileges");
-      builder.SslMode = MySqlSslMode.None;
+      builder.SslMode = MySqlSslMode.Disabled;
       using (MySqlConnection connection = new MySqlConnection(builder.ConnectionString))
       {
         connection.Open();
@@ -1830,7 +1972,7 @@ namespace MySql.Data.MySqlClient.Tests
       }
 
       // TLS not enabled.
-      builder.SslMode = MySqlSslMode.None;
+      builder.SslMode = MySqlSslMode.Disabled;
       using (MySqlConnection connection = new MySqlConnection(builder.ConnectionString))
       {
         connection.Open();
@@ -1845,7 +1987,7 @@ namespace MySql.Data.MySqlClient.Tests
       }
 
       ExecuteSQL("flush privileges");
-      builder.SslMode = MySqlSslMode.None;
+      builder.SslMode = MySqlSslMode.Disabled;
       using (MySqlConnection connection = new MySqlConnection(builder.ConnectionString))
       {
         connection.Open();

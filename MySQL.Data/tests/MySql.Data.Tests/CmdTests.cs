@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2013, 2021, Oracle and/or its affiliates.
+﻿// Copyright (c) 2013, 2022, Oracle and/or its affiliates.
 //
 // This program is free software; you can redistribute it and/or modify
 // it under the terms of the GNU General Public License, version 2.0, as
@@ -676,9 +676,16 @@ namespace MySql.Data.MySqlClient.Tests
     [Test]
     public void CloneCommand()
     {
-      MySqlCommand cmd = new MySqlCommand();
-      MySqlCommand newCommand = cmd.Clone() as MySqlCommand;
-      IDbCommand newCommand2 = (IDbCommand)(cmd as ICloneable).Clone();
+      using var cmd = new MySqlCommand();
+      cmd.Attributes.SetAttribute("attr", "attr_value");
+      cmd.Parameters.AddWithValue("@param", "param_value");
+
+      var cmd2 = (MySqlCommand)cmd.Clone();
+
+      Assert.AreEqual(1, cmd2.Parameters.Count);
+      Assert.AreEqual(1, cmd2.Attributes.Count);
+      StringAssert.AreEqualIgnoringCase("attr_value", cmd2.Attributes[0].Value.ToString());
+      StringAssert.AreEqualIgnoringCase("param_value", cmd2.Parameters[0].Value.ToString());
     }
 
     /// <summary>
@@ -748,7 +755,6 @@ namespace MySql.Data.MySqlClient.Tests
 
     #endregion
 
-    #region WL14389
     [Test, Description("Timeout using Big Table ")]
     public void TimeoutBigTable()
     {
@@ -863,6 +869,24 @@ namespace MySql.Data.MySqlClient.Tests
       }
     }
 
-    #endregion WL14389
+    /// <summary>
+    /// Bug #21971751 - USING TABS FOR WHITESPACE RESULTS IN "YOU HAVE AN ERROR IN YOUR SQL SYNTAX..."
+    /// At the moment the query was analyzed, the tabs ('\t') and new lines ('\n') were not considered.
+    /// </summary>
+    [Test]
+    public void ExecuteCmdWithTabsAndNewLines()
+    {
+      ExecuteSQL(@"CREATE TABLE Test (id INT NOT NULL PRIMARY KEY); 
+        INSERT INTO Test VALUES (1);");
+
+      using (var cmd = Connection.CreateCommand())
+      {
+        cmd.CommandText = "SELECT\nCOUNT(*)\nFROM\nTest;";
+        Assert.AreEqual(1, cmd.ExecuteScalar());
+
+        cmd.CommandText = "SELECT\tCOUNT(*)\n\t\tFROM\tTest;";
+        Assert.AreEqual(1, cmd.ExecuteScalar());
+      }
+    }
   }
 }
